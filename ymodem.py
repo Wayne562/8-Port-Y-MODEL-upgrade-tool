@@ -32,10 +32,6 @@ class YMODEM(object):
         self.flash_status = 0  # 烧录状态，初始化为 0，表示未开始烧录
         self.flash_status_callback = None
 
-    # 更新 flash_status 属性的方法
-    def update_flash_status(self, new_status):
-        self.flash_status = new_status
-
     # send abort(CAN) twice
     def abort(self, count=2):
         for _ in range(count):
@@ -45,29 +41,8 @@ class YMODEM(object):
     send entry
     '''
 
-    #   取消升级/升级失败
-    def cancel_send(self):
-        self.flash_status = 2  # 设置 flash_status 为 2，表示升级失败
-        if self.flash_status_callback:
-            self.flash_status_callback(self.flash_status)
-        print('*** 升级失败')
-        return False
-
-    #   升级成功
-    def completed_send(self):
-        # 设置 flash_status为 1，表示烧录完成
-        self.flash_status = 1
-        if self.flash_status_callback:
-            self.flash_status_callback(self.flash_status)
-        print('*** 升级成功')
-        return True
-
     def send(self, file_stream, file_name, file_size=0, retry=20, timeout=15, callback=None,
              flash_status_callback=None):
-        if self.flash_status == 2:
-            self.cancel_send()
-
-        print('self.flash_status = ', self.flash_status)
         try:
             packet_size = dict(
                 ymodem=1024,
@@ -81,6 +56,10 @@ class YMODEM(object):
         print('*** total_packet: ', total_packet)
 
         self.log.debug('*** Begin start sequence')
+        self.flash_status = 3  # flash_status为3表示正在升级中
+        if flash_status_callback:
+            flash_status_callback(self.flash_status)
+            print('升级中...')
 
         # Receive first character
         error_count = 0
@@ -96,19 +75,27 @@ class YMODEM(object):
                     self.log.info("<<< CAN")
                     self.log.warning("[Sender]:   received  a request from the Receiver to cancel the transmission")
                     if cancel:
-                        self.cancel_send()  # 升级失败
+                        # 设置 flash_status为 2，表示升级失败
+                        self.flash_status = 2
+                        if flash_status_callback:
+                            flash_status_callback(self.flash_status)
+                        print('*** 升级失败')
+                        return False
                     else:
                         cancel = 1
                 else:
                     self.log.error(">>> send error, expected CRC or CAN, but got " + hex(ord(char)))
-                    if self.flash_status == 2:
-                        self.cancel_send()
 
             error_count += 1
             if error_count > retry:
                 self.abort()
                 self.log.error(">>> send error: error_count reached %d aborting", retry)
-                self.cancel_send()
+                # 设置 flash_status为 2，表示升级失败
+                self.flash_status = 2
+                if flash_status_callback:
+                    flash_status_callback(self.flash_status)
+                print('*** 升级失败')
+                return False
 
         header = self._make_send_header(128, 0)
         name = bytes(file_name, encoding="utf8")
@@ -144,7 +131,12 @@ class YMODEM(object):
                 elif char == CAN:
                     self.log.info("<<< CAN")
                     if cancel:
-                        self.cancel_send()  # 升级失败
+                        # 设置 flash_status为 2，表示升级失败
+                        self.flash_status = 2
+                        if flash_status_callback:
+                            flash_status_callback(self.flash_status)
+                        print('*** 升级失败')
+                        return False
                     else:
                         cancel = 1
                 else:
@@ -152,8 +144,6 @@ class YMODEM(object):
                         self.log.error("<<< test" + str(char))
                     else:
                         self.log.error("<<< send error, expected ACK or CAN, but got " + hex(ord(char)))
-                        if self.flash_status == 2:
-                            self.cancel_send()
 
         error_count = 0
         cancel = 0
@@ -189,7 +179,12 @@ class YMODEM(object):
                         error_count += 1
                     if error_count > retry:
                         self.abort()
-                        self.cancel_send()  # 升级失败
+                        # 设置 flash_status为 2，表示升级失败
+                        self.flash_status = 2
+                        if flash_status_callback:
+                            flash_status_callback(self.flash_status)
+                        print('*** 升级失败')
+                        return False
 
                 error_count = 0
                 if char == ACK:
@@ -212,7 +207,12 @@ class YMODEM(object):
                 if error_count > retry:
                     self.abort()
                     self.log.error('send error: NAK   received  %d , aborting', retry)
-                    self.cancel_send()  # 升级失败
+                    # 设置 flash_status为 2，表示升级失败
+                    self.flash_status = 2
+                    if flash_status_callback:
+                        flash_status_callback(self.flash_status)
+                    print('*** 升级失败')
+                    return False
 
             sequence = (sequence + 1) % 0x100
 
@@ -230,7 +230,12 @@ class YMODEM(object):
                 if error_count > retry:
                     self.abort()
                     self.log.warning('<<< EOT was not ACK, aborting transfer')
-                    self.cancel_send()  # 升级失败
+                    # 设置 flash_status为 2，表示升级失败
+                    self.flash_status = 2
+                    if flash_status_callback:
+                        flash_status_callback(self.flash_status)
+                    print('*** 升级失败')
+                    return False
 
         header = self._make_send_header(128, 0)
 
@@ -260,10 +265,20 @@ class YMODEM(object):
                 if error_count > retry:
                     self.abort()
                     self.log.warning('>>> SOH was not ACK, aborting transfer')
-                    self.cancel_send()  # 升级失败
+                    # 设置 flash_status为 2，表示升级失败
+                    self.flash_status = 2
+                    if flash_status_callback:
+                        flash_status_callback(self.flash_status)
+                    print('*** 升级失败')
+                    return False
 
         self.log.info('*** Transmission successful (ACK received )')
-        self.completed_send()  # 升级成功
+        # 设置 flash_status为 1，表示烧录完成
+        self.flash_status = 1
+        if flash_status_callback:
+            flash_status_callback(self.flash_status)
+        print('*** 升级成功')
+        return True
 
     # Header byte
     def _make_send_header(self, packet_size, sequence):

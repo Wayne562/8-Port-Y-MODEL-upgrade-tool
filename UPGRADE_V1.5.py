@@ -1,9 +1,9 @@
 """
 晟华光电升级工具 Release Notes:
 
-Version 1.5 (2024-03-16):
+Version 1.5 (2025-09-07):
 - 新增功能：无
-- 修复问题：修复了打包后exe文件图标显示不正确的问题。
+- 修复问题：修复close_serial方法中isOpen()写法的问题，改成is_open。
 - 改进：无
 
 Important Notes:
@@ -33,7 +33,6 @@ send_data_mutex = threading.Lock()
 
 class SerialFlasherApp:
     def __init__(self, root):
-        self.flash_status = 0
         self.log = logging.getLogger('YReporter')
         self.root = root
         self.root.title("UPGRADE_V1.5")
@@ -44,8 +43,7 @@ class SerialFlasherApp:
         # root.iconbitmap("tmp.ico")  # 设置图标
         # os.remove("tmp.ico")
 
-        self.ser = [serial.Serial(baudrate=115200,
-                                  bytesize=8,
+        self.ser = [serial.Serial(bytesize=8,
                                   stopbits=1,
                                   timeout=1,
                                   xonxoff=False,
@@ -62,7 +60,6 @@ class SerialFlasherApp:
 
         # 串口部分
         self.serial_rows = []
-        self.file_paths = {}  # 用于保存每行的文件路径
         self.progress_bars = []
         self.progress_percentage = []
         self.available_ports = []  # 存储所有可用串口
@@ -112,21 +109,28 @@ class SerialFlasherApp:
         port_combobox = ttk.Combobox(frame, textvariable=port_var, state="readonly", width=20, )
         port_combobox.grid(row=0, column=1, padx=5, pady=0)
 
+        # 创建一个波特率的 Combobox 控件
+        baudrate_var = tk.StringVar()
+        baudrate_combobox = ttk.Combobox(frame, textvariable=baudrate_var, state="readonly", width=20)
+        baudrate_combobox['values'] = ["300", "600", "1200", "2400", "4800", "9600", "19200", "38400",
+                                       "57600", "115200", "128000", "230400", "256000", "460800", "921600"]
+        baudrate_combobox.grid(row=0, column=2, padx=5, pady=0)
+
         # 每个串口行的打开串口按键
-        open_button = tk.Button(frame, text="打开串口", command=lambda: self.open_serial(0, port_var), width=10,
-                                height=3,
+        open_button = tk.Button(frame, text="打开串口", command=lambda: self.open_serial(0, port_var), width=10, height=3,
                                 font=("宋体", 12))
-        open_button.grid(row=0, column=2, padx=5, pady=0)
+        open_button.grid(row=0, column=3, padx=5, pady=0)
 
         # 每个串口行的关闭串口按键
         close_button = tk.Button(frame, text="关闭串口", command=lambda: self.close_serial(0, port_var),
                                  state=tk.DISABLED, width=10, height=3, font=("宋体", 12))
-        close_button.grid(row=0, column=3, padx=5, pady=0)
+        close_button.grid(row=0, column=4, padx=5, pady=0)
 
         frame.grid(row=1, column=0, columnspan=3, pady=0, sticky='ew')
 
         return {
             'port_combobox': port_combobox,
+            'baudrate_combobox': baudrate_combobox,  # 添加波特率的 Combobox
             'open_button': open_button,
             'close_button': close_button,
         }
@@ -141,7 +145,7 @@ class SerialFlasherApp:
 
         # 每个接口行的选择升级文件按键
         select_file_button = tk.Button(frame, text="选择接口{}升级文件".format(row), height=2,
-                                       command=lambda rows=row: self.select_file(row))  # 为每个升级接口行的选择文件按钮添加一个row参数
+                                       command=lambda row=row: self.select_file(row))  # 为每个升级接口行的选择文件按钮添加一个row参数
         select_file_button.grid(row=0, column=1, padx=5, pady=5)
 
         # 每个接口行的文件显示Entry
@@ -151,8 +155,8 @@ class SerialFlasherApp:
 
         # 每个接口行的烧录按键
         flash_button = tk.Button(frame, text="升级",
-                                 command=lambda rows=row: self.flash(row, self.serial_rows[0]['port_combobox'].get()),
-                                 state=tk.DISABLED, height=2, width=8, font=('宋体', 12))  # 将选定的串口传递给flash函数
+                                 command=lambda row=row: self.flash(row, self.serial_rows[0]['port_combobox'].get()),
+                                 state=tk.DISABLED, height=2, width=8, font=('宋体', 12))  # 修改这里，将选定的串口传递给flash函数
         flash_button.grid(row=0, column=3, padx=5, pady=0)
 
         # 烧录进度条控件
@@ -167,13 +171,6 @@ class SerialFlasherApp:
         flash_status_label = tk.Label(frame, fg='grey', text="准备升级", height=2, relief=tk.RIDGE, font=('宋体', 12))
         flash_status_label.grid(row=0, column=6, padx=5, pady=0)
 
-        # 每个接口行的取消升级按键
-        cancel_flash_button = tk.Button(frame, text="取消升级",
-                                        command=lambda rows=row: self.cancel_flash(row, self.serial_rows[0][
-                                            'port_combobox'].get()),
-                                        state=tk.DISABLED, height=2, width=8, font=('宋体', 12))
-        cancel_flash_button.grid(row=0, column=7, padx=5, pady=0)
-
         frame.grid(row=row + 2, column=0, columnspan=3, pady=0, sticky='ew')
 
         return {
@@ -183,22 +180,13 @@ class SerialFlasherApp:
             'progress_bar': progress_bar,
             'percentage_label': percentage_label,
             'flash_status_label': flash_status_label,
-            'cancel_flash_button': cancel_flash_button
         }
 
     # 选择文件函数
     def select_file(self, row):  # 修改这里，为select_file函数添加一个row参数
-        # 首先检查该行的文件路径字典是否有保存的路径，如果有，直接使用该路径打开文件对话框
-        if row in self.file_paths:
-            initial_dir = os.path.dirname(self.file_paths[row])
-        else:
-            initial_dir = os.getcwd()
-
-        filename = filedialog.askopenfilename(initialdir=initial_dir)
+        filename = filedialog.askopenfilename()
         if filename:
-            self.file_paths[row] = filename  # 将文件路径保存到对应行的文件路径字典中
-            self.rows[row - 1]['file_path_entry'].delete(0, tk.END)
-            self.rows[row - 1]['file_path_entry'].insert(0, filename)  # 更新对应interface行的文件路径Entry
+            self.file_path[row - 1].set(filename)  # 更新对应interface行的file_path变量
             self.rows[row - 1]['flash_button']['state'] = tk.NORMAL  # 文件选择后，将对应行的烧录按钮状态设置为正常
 
     # 获取当前可用的串口列表
@@ -220,15 +208,18 @@ class SerialFlasherApp:
     # 打开串口
     def open_serial(self, row, port_var):
         selected_port = port_var.get()
+        selected_baudrate = self.serial_rows[0]['baudrate_combobox'].get()  # 获取所选的波特率
         if selected_port:
             try:
                 self.ser[0].port = selected_port
+                self.ser[0].baudrate = int(selected_baudrate)  # 设置波特率
                 if not self.ser[0].is_open:
                     self.ser[0].open()
-                    #  更新串口状态
+                    print('baud rate:', self.serial_rows[0]['baudrate_combobox'].get())
+                    # 更新串口状态
                     self.open_serial_status()
                     # 记录已打开的串口信息
-                    port_info = {'name': selected_port}
+                    port_info = {'name': selected_port, 'baudrate': selected_baudrate}
                     self.opened_ports.append(port_info)
                     self.opened_ports_count += 1
             except serial.SerialException as e:
@@ -238,17 +229,21 @@ class SerialFlasherApp:
             messagebox.showinfo("提示", "请先选择串口！")
 
     # 关闭串口
+    # 在 close_serial 方法中获取所选的波特率并关闭串口
     def close_serial(self, row, port_var):
-        self.ser[0].port = port_var.get()
-        if not self.ser[0].isOpen():
+        selected_port = port_var.get()
+        if not self.ser[0].is_open:
             messagebox.showinfo("提示", "串口未连接！")
             self.close_serial_status()  # 串口未连接，则关闭串口按键状态恢复到打开串口前的状态
         else:
             try:
                 self.ser[0].close()
-                #  更新串口状态
+                print('baud rate:', self.serial_rows[0]['baudrate_combobox'].get())
+                # 更新串口状态
                 self.close_serial_status()
                 self.opened_ports_count -= 1
+                # 从已打开的串口列表中移除已关闭的串口
+                self.opened_ports = [port for port in self.opened_ports if port['name'] != selected_port]
             except serial.SerialException as e:
                 print(e)
                 messagebox.showinfo(title="提示", message='串口关闭失败！')
@@ -292,14 +287,12 @@ class SerialFlasherApp:
         self.rows[row]['flash_button']['state'] = tk.DISABLED
         self.rows[row]['select_file_button']['state'] = tk.DISABLED
         self.rows[row]['flash_status_label'].configure(fg='blue', text="升级中...")
-        # 升级中时取消升级按键亮起可点击
-        self.rows[row]['cancel_flash_button']['state'] = tk.NORMAL
 
         self.log.info(f"*** interface{row + 1}The burning thread starts！")
         self.ser[0].port = port_var
-        if self.ser[0].isOpen():
+        if self.ser[0].is_open:
             self.log.info(f"<<< 串口已打开！")
-        elif not self.ser[0].isOpen():
+        elif not self.ser[0].is_open:
             self.log.info(f"<<< 串口未打开！")
             messagebox.showinfo("提示", "串口未打开！")
             self.rows[row]['flash_status_label'].configure(fg='grey', text="准备升级")
@@ -323,21 +316,13 @@ class SerialFlasherApp:
             while True:
                 response = self.ser[0].read(4)
                 print("<<< interface{}  received are:{}\r\n".format(row + 1, response))
-                if self.ymodem_sender.flash_status == 2:
-                    self.log.info(f"*** interface{row + 1} flash canceled！")
-                    self.serial_rows[0]['close_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_status_label'].configure(fg='red', text="升级取消！")
-                    self.rows[row]['select_file_button']['state'] = tk.NORMAL
-                    # 升级失败时取消升级按键置灰不可点击
-                    self.rows[row]['cancel_flash_button']['state'] = tk.DISABLED
-                    return
-
                 if b'C' in response:
                     print("<<< interface{}  received 'CCCC'！\r\n".format(row + 1))
                     break
                 else:
                     print("<<< interface{}  received are:{}\r\n".format(row + 1, response))
+                    # self.ser[0].write((upgrade_command + "\r\n").encode('UTF-8'))
+                    # print(">>> interface{} send upgrade instructions :'{}'！".format(row + 1, upgrade_command))
                     retry_count += 1
                 if retry_count > 10:
                     self.log.info(f"*** interface{row + 1} flash failed！")
@@ -346,8 +331,6 @@ class SerialFlasherApp:
                     self.rows[row]['flash_button']['state'] = tk.NORMAL
                     self.rows[row]['flash_status_label'].configure(fg='red', text="升级失败！")
                     self.rows[row]['select_file_button']['state'] = tk.NORMAL
-                    # 升级失败时取消升级按键置灰不可点击
-                    self.rows[row]['cancel_flash_button']['state'] = tk.DISABLED
                     return False
 
             # 在调用 ymodem_send 方法之前，确保 self.progress_bars 列表的长度至少为 row + 1
@@ -391,8 +374,7 @@ class SerialFlasherApp:
                     self.rows[row]['flash_button']['state'] = tk.NORMAL
                     self.rows[row]['flash_status_label'].configure(fg='green', text="升级成功！")
                     self.rows[row]['select_file_button']['state'] = tk.NORMAL
-                    self.rows[row]['cancel_flash_button']['state'] = tk.DISABLED
-                #   flash_status为2表示升级失败
+                #   flash_status为2表示 flash failed
                 elif flash_status == 2:
                     self.log.info(f"*** serial port on line{row + 1} flash failed！")
                     #   判断烧录是否结束，如果 flash failed，就更新按键状态：打开烧录按键,关闭串口按键和选择文件按键
@@ -400,7 +382,6 @@ class SerialFlasherApp:
                     self.rows[row]['flash_button']['state'] = tk.NORMAL
                     self.rows[row]['flash_status_label'].configure(fg='red', text="升级失败！")
                     self.rows[row]['select_file_button']['state'] = tk.NORMAL
-                    self.rows[row]['cancel_flash_button']['state'] = tk.DISABLED
 
             self.ymodem_sender.send(file_stream, file_name, file_size, callback=callback,
                                     flash_status_callback=flash_status_callback)
@@ -413,7 +394,7 @@ class SerialFlasherApp:
     def update_progress_bar_label(self, row, percentage):
         self.rows[row]['progress_bar'].configure(value=percentage)
 
-    #   开始烧录
+    #   烧录按键
     def flash(self, row, port_var):
         # 烧录逻辑
         # 启动一个线程执行烧录
@@ -425,12 +406,6 @@ class SerialFlasherApp:
         else:
             messagebox.showinfo("提示", "请先打开串口！")
 
-    def cancel_flash(self, row, port_var):
-        print(f"Cancel flash for row {row} and port {port_var}")
-        # 在这里通过 YMODEM 实例来设置或检查 flash_status 的值
-        self.ymodem_sender.update_flash_status(2)  # 更新 YMODEM 实例的 flash_status 属性为 2
-        return False
-
 
 if __name__ == "__main__":
     root = tk.Tk()
@@ -439,3 +414,4 @@ if __name__ == "__main__":
     app = SerialFlasherApp(root)
     root.mainloop()
     print('Script Version:', SCRIPT_VERSION)
+
