@@ -1,7 +1,7 @@
 """
 晟华光电升级工具 Release Notes:
 
-Version 1.5 (2025-09-07):
+Version 1.5.1 (2025-09-07):
 - 新增功能：无
 - 修复问题：修复close_serial方法中isOpen()写法的问题，改成is_open。
 - 改进：无
@@ -252,41 +252,54 @@ class SerialFlasherApp:
 
     # 根据串口打开成功更新各个控件的状态
     def open_serial_status(self):
-        self.serial_rows[0]['open_button']['state'] = tk.DISABLED  # 串口打开成功后，打开串口按键置灰
-        self.serial_rows[0]['close_button']['state'] = tk.NORMAL  # 串口打开成功后，关闭串口按键高亮
+        self.ui_call(self.serial_rows[0]['open_button'].configure, state=tk.DISABLED)  # 串口打开成功后，打开串口按键置灰
+        self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)  # 串口打开成功后，关闭串口按键高亮
 
     # 根据串口关闭成功更新各个控件的状态
     def close_serial_status(self):
-        self.serial_rows[0]['close_button']['state'] = tk.DISABLED  # 串口关闭成功后，关闭串口按键置灰
-        self.serial_rows[0]['open_button']['state'] = tk.NORMAL  # 串口关闭成功后，打开串口按键高亮
+        self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)  # 串口关闭成功后，关闭串口按键置灰
+        self.ui_call(self.serial_rows[0]['open_button'].configure, state=tk.NORMAL)  # 串口关闭成功后，打开串口按键高亮
 
     # 每2秒定时检查一次可用串口
     def update_ports_loop(self):
+        """后台线程：轮询串口；UI 更新丢回主线程执行"""
         while True:
-            available_ports = self.get_available_ports()
-
-            # 将所有可用串口显示在串口下拉框中
-            if available_ports:
-                sorted_ports = sorted(list(available_ports))
-                self.serial_rows[0]['port_combobox']['values'] = sorted_ports
-                # 如果用户没有选择一个串口，那么将第一个可用串口设置为默认显示的串口
-                if not self.serial_rows[0]['port_combobox'].get():
-                    self.serial_rows[0]['port_combobox'].set(sorted_ports[0])
-            else:
-                self.serial_rows[0]['port_combobox']['values'] = []
-                self.serial_rows[0]['port_combobox'].set('')
-
+            try:
+                available = self.get_available_ports()
+                ports = sorted(list(available)) if available else []
+                # 关键：把 UI 更新切回主线程，避免跨线程操作 Tk 控件
+                self.root.after(0, self._apply_ports_to_combo, ports)
+            except Exception:
+                logging.exception("ports poll error")
             time.sleep(2)
+
+    def _apply_ports_to_combo(self, ports):
+        """在主线程里安全地更新下拉框"""
+        combo = self.serial_rows[0]['port_combobox']
+        if ports:
+            # 仅在列表变化时更新，减少闪动
+            if tuple(combo['values']) != tuple(ports):
+                combo['values'] = ports
+            current = combo.get()
+            if not current or current not in ports:
+                combo.set(ports[0])
+        else:
+            combo['values'] = []
+            combo.set('')
+
+    def ui_call(self, fn, *args, **kwargs):
+        """在 Tk 主线程中执行 fn(*args, **kwargs)（修复跨线程更新 UI 的问题）"""
+        self.root.after(0, lambda: fn(*args, **kwargs))
 
     # 串口烧录逻辑及其方法
     def burn_in_thread(self, row, port_var, upgrade_command):
         # 在这里重新初始化ymodem_sender
         self.ymodem_sender = YMODEM(lambda size: self.sender_getc(size, row), lambda data: self.sender_putc(data, row))
         #   烧录过程中禁用烧录按键,关闭串口按键和选择文件按键,烧录状态显示框显示‘烧录中’
-        self.serial_rows[0]['close_button']['state'] = tk.DISABLED
-        self.rows[row]['flash_button']['state'] = tk.DISABLED
-        self.rows[row]['select_file_button']['state'] = tk.DISABLED
-        self.rows[row]['flash_status_label'].configure(fg='blue', text="升级中...")
+        self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)
+        self.ui_call(self.rows[row]['flash_button'].configure, state=tk.DISABLED)
+        self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.DISABLED)
+        self.ui_call(self.rows[row]['flash_status_label'].configure, fg='blue', text="升级中.")
 
         self.log.info(f"*** interface{row + 1}The burning thread starts！")
         self.ser[0].port = port_var
@@ -294,10 +307,10 @@ class SerialFlasherApp:
             self.log.info(f"<<< 串口已打开！")
         elif not self.ser[0].is_open:
             self.log.info(f"<<< 串口未打开！")
-            messagebox.showinfo("提示", "串口未打开！")
-            self.rows[row]['flash_status_label'].configure(fg='grey', text="准备升级")
-            self.rows[row]['flash_button']['state'] = tk.NORMAL
-            self.rows[row]['select_file_button']['state'] = tk.NORMAL
+            self.ui_call(messagebox.showinfo, "提示", "串口未打开！")
+            self.ui_call(self.rows[row]['flash_status_label'].configure, fg='grey', text="准备升级")
+            self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+            self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
             return
 
         file = self.file_path[row].get()
@@ -327,10 +340,10 @@ class SerialFlasherApp:
                 if retry_count > 10:
                     self.log.info(f"*** interface{row + 1} flash failed！")
                     #   判断烧录是否结束，如果 flash failed，就更新按键状态：打开烧录按键,关闭串口按键和选择文件按键
-                    self.serial_rows[0]['close_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_status_label'].configure(fg='red', text="升级失败！")
-                    self.rows[row]['select_file_button']['state'] = tk.NORMAL
+                    self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级失败！")
+                    self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
                     return False
 
             # 在调用 ymodem_send 方法之前，确保 self.progress_bars 列表的长度至少为 row + 1
@@ -338,7 +351,7 @@ class SerialFlasherApp:
                 progress_bar = ttk.Progressbar(self.root, orient=tk.HORIZONTAL, length=200, mode='determinate')
                 self.progress_bars.append(progress_bar)
 
-            self.progress_bars[row].configure(value=0)
+            self.root.after(0, self.progress_bars[row].configure, value=0)
             self.ymodem_send(file, row, lambda percentage: self.progress_bars[row].configure(value=percentage))
 
     #   通过ymodem协议发送升级文件
@@ -370,18 +383,18 @@ class SerialFlasherApp:
                 if flash_status == 1:
                     self.log.info(f"*** 第{row + 1}行串口烧录完成！")
                     #   判断烧录是否结束，如果烧录完成，就更新按键状态：打开烧录按键,关闭串口按键和选择文件按键
-                    self.serial_rows[0]['close_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_status_label'].configure(fg='green', text="升级成功！")
-                    self.rows[row]['select_file_button']['state'] = tk.NORMAL
+                    self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_status_label'].configure, fg='green', text="升级成功！")
+                    self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
                 #   flash_status为2表示 flash failed
                 elif flash_status == 2:
                     self.log.info(f"*** serial port on line{row + 1} flash failed！")
                     #   判断烧录是否结束，如果 flash failed，就更新按键状态：打开烧录按键,关闭串口按键和选择文件按键
-                    self.serial_rows[0]['close_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_button']['state'] = tk.NORMAL
-                    self.rows[row]['flash_status_label'].configure(fg='red', text="升级失败！")
-                    self.rows[row]['select_file_button']['state'] = tk.NORMAL
+                    self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级失败！")
+                    self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
 
             self.ymodem_sender.send(file_stream, file_name, file_size, callback=callback,
                                     flash_status_callback=flash_status_callback)
