@@ -1,9 +1,9 @@
 """
 晟华光电升级工具 Release Notes:
 
-Version 1.5 (2024-03-16):
+Version 1.5 (2025-09-07):
 - 新增功能：无
-- 修复问题：修复了打包后exe文件图标显示不正确的问题。
+- 修复问题：修复close_serial方法中isOpen()写法的问题，改成is_open。
 - 改进：无
 
 Important Notes:
@@ -232,7 +232,7 @@ class SerialFlasherApp:
     # 在 close_serial 方法中获取所选的波特率并关闭串口
     def close_serial(self, row, port_var):
         selected_port = port_var.get()
-        if not self.ser[0].isOpen():
+        if not self.ser[0].is_open:
             messagebox.showinfo("提示", "串口未连接！")
             self.close_serial_status()  # 串口未连接，则关闭串口按键状态恢复到打开串口前的状态
         else:
