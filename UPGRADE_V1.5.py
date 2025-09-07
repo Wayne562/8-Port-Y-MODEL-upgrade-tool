@@ -35,7 +35,7 @@ class SerialFlasherApp:
     def __init__(self, root):
         self.log = logging.getLogger('YReporter')
         self.root = root
-        self.root.title("JS_V1.2.1")
+        self.root.title("V1.5")
         # img = b'AAABAAEAEBAAAAEAGADNAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAQAAAAEAgGAAAAH/P/YQAAAAFzUkdCAK7OHOkAAAAEZ0FNQQAAsY8L/GEFAAAACXBIWXMAAA7DAAAOwwHHb6hkAAACYklEQVQ4T21TaW+bQBT0//8jUeKbOE77oVFP9VCaKk0VBzAG4jQxtsGYYwEDO53FapUmkRjt2+Xt7Oy8ty1ZL2VdSymklHW1hyyJ3R5/1x4jY36u8jm2ZFXj1Ahx4BYYmxnGRo5jQ0BrkOFEF0SKUTNyfpNDswr0pzE+2g9olQA6jkDfDjGyEhybCYb/kDbzYyZrUzWqeYreLGG+wMCK0MpI0LYzLkZM2CLgPJZAWgMFcWgXOLM9XK7Q/Hu1okp9w3ySkaiVNwr2BCMy+vEGk/lvXDtzxKXEa2OJmuMnx0dV1vi5DTC+XaFvkcBO/yfo6h5+2A6urFskXBfc0HMTRIzfT71GUcr4ygvRUQqeEmiGh7WUCGhsymskoAJnhTDb4S4sUWQ5PFHg65omKr8eE3StLc7DAvcihai5m998s8abmc/TFhjbLi6XG1YgQMeI0FOmPlNwE2FgrnG5CTBkCd+aHtq3yvUIH4IU7645Z0Xas6IhemZi17SAHatAjKcPkFWOswntV3L4VRVDGjGkfG3Kqj1VoIc5FqKi6zUeeF/BeEzz2HzkrRByhBQ4mG1x5G5fuIIT4/wuwMUiQMkfo/kCR/chIp665PFWnLNHJIZ6go79goKOHqOUNU4mLFYm4fox+m6I734JPWbrWi59mWMTVE0XNgSCBD12YpcEI9PHKXuhbZX4cp/iG0/XDB89M8JwFuKC9f/MtS6Nbs/4ZpSJJW+nqd6mMUOWUvX5gAb1GB+6NNaiCpIP+A4GSqWdMCdm24c4nQZoKXd/LWJK4mYnb9B1CmIfv4SOyxy+Gy+I8AfsD6ZHYDR/UwAAAABJRU5ErkJggg=='
         # tmp = open("tmp.ico", "wb+")
         # tmp.write(base64.b64decode(img))  # 写入到临时文件中
@@ -290,9 +290,9 @@ class SerialFlasherApp:
 
         self.log.info(f"*** interface{row + 1}The burning thread starts！")
         self.ser[0].port = port_var
-        if self.ser[0].isOpen():
+        if self.ser[0].is_open:
             self.log.info(f"<<< 串口已打开！")
-        elif not self.ser[0].isOpen():
+        elif not self.ser[0].is_open:
             self.log.info(f"<<< 串口未打开！")
             messagebox.showinfo("提示", "串口未打开！")
             self.rows[row]['flash_status_label'].configure(fg='grey', text="准备升级")
