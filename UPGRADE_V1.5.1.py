@@ -1,14 +1,11 @@
+# -*- coding: utf-8 -*-
 """
-晟华光电升级工具 Release Notes:
-
-Version 1.5.1 (2025-09-07):
-- 新增功能：无
-- 修复问题：修复close_serial方法中isOpen()写法的问题，改成is_open。
-- 改进：无
-
-Important Notes:
-- 请注意，在每次选择文件后，请确保文件路径保存成功，以避免下次点击文件按键时显示错误路径。
-- 如果遇到任何问题或有建议，请及时联系我们进行反馈。
+UPGRADE_V1.5.1
+在原有版本基础上新增 UDP 行与配置/连接功能：
+1) 串口行下面新增 UDP 行（UDP 标签 → 配置 → Server IP 显示 → 连接 → 关闭）
+2) “配置”弹窗：local ip / local port / server ip / server port
+3) UDP 连接成功：串口“打开/关闭”按钮置灰；失败：串口行恢复默认
+4) UDP 连接成功后，下面升级仍旧是 YMODEM，sender_getc/putc 自动走 UDP
 """
 
 import logging
@@ -17,6 +14,8 @@ import os
 import queue
 import threading
 import time
+import socket
+import ipaddress
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -74,6 +73,21 @@ class SerialFlasherApp:
             serial_row = self.create_serial_row()
             serial_row['port_status'] = 'Closed'
             self.serial_rows.append(serial_row)
+
+        # ✅ UDP 状态与配置
+        self.udp_connected = False
+        self.udp_sock = None
+        self.udp_rx_buf = bytearray()
+        self.udp_conf = {
+            "local_ip": "",
+            "local_port": "",
+            "server_ip": "",
+            "server_port": "",
+        }
+        self.udp_server_ip_var = tk.StringVar(value="")  # UDP 行里显示用
+
+        # ✅ 创建 UDP 行（位于串口行下面）
+        self.udp_row = self.create_udp_row()
 
         # 创建8个接口行的GUI控件，并传递接口名称
         for i, interface_name in enumerate(self.interface_names):
@@ -176,6 +190,189 @@ class SerialFlasherApp:
             'flash_status_label': flash_status_label,
         }
 
+    def create_udp_row(self):
+        """
+        UDP 行，从左到右：
+        [UDP] [配置] [Server IP Entry] [连接] [关闭]
+        """
+        frame = tk.Frame(self.root)
+
+        # label
+        udp_label = tk.Label(frame, text="UDP", width=10, height=3, relief=tk.SUNKEN, font=("宋体", 12))
+        udp_label.grid(row=0, column=0, sticky=tk.E, padx=5, pady=0)
+
+        # 配置按钮
+        cfg_btn = tk.Button(frame, text="UDP配置", width=10, height=3, font=("宋体", 12),
+                            command=self.udp_config_dialog)
+        cfg_btn.grid(row=0, column=1, padx=5, pady=0)
+
+        # Server IP 显示（只读）
+        server_ip_entry = tk.Entry(frame, textvariable=self.udp_server_ip_var, width=22, font=('宋体', 13),
+                                   state="readonly")
+        server_ip_entry.grid(row=0, column=2, padx=5, pady=0)
+
+        # 连接按钮
+        connect_btn = tk.Button(frame, text="连接", width=10, height=3, font=("宋体", 12),
+                                command=self.udp_connect)
+        connect_btn.grid(row=0, column=3, padx=5, pady=0)
+
+        # 关闭按钮
+        close_btn = tk.Button(frame, text="关闭", width=10, height=3, font=("宋体", 12),
+                              state=tk.DISABLED, command=self.udp_close)
+        close_btn.grid(row=0, column=4, padx=5, pady=0)
+
+        # 布局在串口行下面（串口行是 row=1）
+        frame.grid(row=2, column=0, columnspan=3, pady=0, sticky='ew')
+
+        return {
+            "frame": frame,
+            "label": udp_label,
+            "cfg_button": cfg_btn,
+            "server_ip_entry": server_ip_entry,
+            "connect_button": connect_btn,
+            "close_button": close_btn,
+        }
+
+    def _guess_local_ip(self) -> str:
+        """尽力猜一个本机 IP 作为默认值（失败就留空）"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            try:
+                return socket.gethostbyname(socket.gethostname())
+            except Exception:
+                return ""
+
+    def udp_config_dialog(self):
+        top = tk.Toplevel(self.root)
+        top.title("UDP 配置")
+        top.grab_set()  # 模态
+
+        # 取旧值或默认值
+        lv_ip = self.udp_conf.get("local_ip") or self._guess_local_ip()
+        lv_port = self.udp_conf.get("local_port") or ""
+        sv_ip = self.udp_conf.get("server_ip") or ""
+        sv_port = self.udp_conf.get("server_port") or ""
+
+        v_local_ip = tk.StringVar(value=lv_ip)
+        v_local_port = tk.StringVar(value=lv_port)
+        v_server_ip = tk.StringVar(value=sv_ip)
+        v_server_port = tk.StringVar(value=sv_port)
+
+        tk.Label(top, text="Local IP:").grid(row=0, column=0, sticky="e", padx=8, pady=6)
+        tk.Entry(top, textvariable=v_local_ip, width=24).grid(row=0, column=1, padx=8, pady=6)
+
+        tk.Label(top, text="Local Port:").grid(row=1, column=0, sticky="e", padx=8, pady=6)
+        tk.Entry(top, textvariable=v_local_port, width=24).grid(row=1, column=1, padx=8, pady=6)
+
+        tk.Label(top, text="Server IP:").grid(row=2, column=0, sticky="e", padx=8, pady=6)
+        tk.Entry(top, textvariable=v_server_ip, width=24).grid(row=2, column=1, padx=8, pady=6)
+
+        tk.Label(top, text="Server Port:").grid(row=3, column=0, sticky="e", padx=8, pady=6)
+        tk.Entry(top, textvariable=v_server_port, width=24).grid(row=3, column=1, padx=8, pady=6)
+
+        def on_ok():
+            try:
+                # 基础校验
+                if v_local_ip.get():
+                    ipaddress.ip_address(v_local_ip.get())
+                if v_server_ip.get():
+                    ipaddress.ip_address(v_server_ip.get())
+                lp = int(v_local_port.get())
+                sp = int(v_server_port.get())
+                if not (0 <= lp <= 65535 and 0 <= sp <= 65535):
+                    raise ValueError("端口范围应为 0~65535")
+            except Exception as e:
+                messagebox.showinfo("提示", f"配置非法：{e}")
+                return
+
+            self.udp_conf.update({
+                "local_ip": v_local_ip.get(),
+                "local_port": v_local_port.get(),
+                "server_ip": v_server_ip.get(),
+                "server_port": v_server_port.get(),
+            })
+            # 行内显示 server ip
+            self.udp_server_ip_var.set(self.udp_conf["server_ip"])
+            top.destroy()
+
+        def on_cancel():
+            top.destroy()
+
+        btn_ok = tk.Button(top, text="确定", width=10, command=on_ok)
+        btn_ok.grid(row=4, column=0, padx=8, pady=10)
+        btn_cancel = tk.Button(top, text="取消", width=10, command=on_cancel)
+        btn_cancel.grid(row=4, column=1, padx=8, pady=10)
+
+    def udp_connect(self):
+        # 校验配置
+        conf = self.udp_conf
+        try:
+            lip = conf.get("local_ip") or ""
+            lpt = int(conf.get("local_port") or "0")
+            sip = conf.get("server_ip") or ""
+            spt = int(conf.get("server_port") or "0")
+            if not (sip and spt):
+                messagebox.showinfo("提示", "请先配置 Server IP/Port")
+                return
+            if lip:
+                ipaddress.ip_address(lip)
+            ipaddress.ip_address(sip)
+            if not (0 <= lpt <= 65535 and 0 <= spt <= 65535):
+                raise ValueError("端口范围应为 0~65535")
+        except Exception as e:
+            messagebox.showinfo("提示", f"配置非法：{e}")
+            return
+
+        # 建立/绑定/连接
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(1.0)
+            if lpt or lip:
+                sock.bind((lip, lpt))
+            # "连接"一个 UDP 目标，便于后续 recv() 只收该对端数据
+            sock.connect((sip, spt))
+            self.udp_sock = sock
+            self.udp_connected = True
+            self.udp_rx_buf.clear()
+
+            # ✅ UI：UDP 连接成功 → 禁用串口开/关按钮；UDP 连接按钮置灰，关闭按钮高亮
+            self.ui_call(self.serial_rows[0]['open_button'].configure, state=tk.DISABLED)
+            self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)
+            self.ui_call(self.udp_row['connect_button'].configure, state=tk.DISABLED)
+            self.ui_call(self.udp_row['close_button'].configure, state=tk.NORMAL)
+
+            messagebox.showinfo("提示", f"UDP 已连接到 {sip}:{spt}")
+
+        except Exception as e:
+            self.udp_connected = False
+            self.udp_sock = None
+            self.udp_rx_buf.clear()
+            # ✅ UI：连接失败 → 恢复串口行默认状态（打开=可点、关闭=置灰；UDP 连接按钮可点，关闭置灰）
+            self.ui_call(self.serial_rows[0]['open_button'].configure, state=tk.NORMAL)
+            self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)
+            self.ui_call(self.udp_row['connect_button'].configure, state=tk.NORMAL)
+            self.ui_call(self.udp_row['close_button'].configure, state=tk.DISABLED)
+            messagebox.showinfo("提示", f"UDP 连接失败：{e}")
+
+    def udp_close(self):
+        try:
+            if self.udp_sock:
+                self.udp_sock.close()
+        finally:
+            self.udp_sock = None
+            self.udp_connected = False
+            self.udp_rx_buf.clear()
+            # ✅ UI：关闭 UDP → 串口按钮恢复默认；UDP 连接按钮可点，关闭置灰
+            self.ui_call(self.serial_rows[0]['open_button'].configure, state=tk.NORMAL)
+            self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)
+            self.ui_call(self.udp_row['connect_button'].configure, state=tk.NORMAL)
+            self.ui_call(self.udp_row['close_button'].configure, state=tk.DISABLED)
+
     # 选择文件函数
     def select_file(self, row):  # 修改这里，为select_file函数添加一个row参数
         filename = filedialog.askopenfilename()
@@ -190,14 +387,43 @@ class SerialFlasherApp:
         return all_available_ports
 
     def sender_getc(self, size, row):
-        # print('getc: ', self.ser[0].read(size))
-        print('row-sender', row)
+        # ✅ 如果 UDP 已连接，优先走 UDP
+        if self.udp_connected and self.udp_sock:
+            try:
+                # 用一个缓冲把 datagram 拆成字节流，满足 YMODEM 对 getc(1) 的调用习惯
+                if not self.udp_rx_buf:
+                    pkt = self.udp_sock.recv(4096)  # 单次尽量多收一点
+                    if pkt:
+                        self.udp_rx_buf.extend(pkt)
+                if not self.udp_rx_buf:
+                    return None
+                # 按请求大小返回
+                out = bytes(self.udp_rx_buf[:size])
+                del self.udp_rx_buf[:size]
+                return out or None
+            except socket.timeout:
+                return None
+            except Exception:
+                return None
+
+        # 串口路径（原有逻辑）
         return self.ser[0].read(size) or None
 
     def sender_putc(self, data, row):
+        # ✅ UDP 已连接则走 UDP
+        if self.udp_connected and self.udp_sock:
+            try:
+                self.udp_sock.send(data)
+            except Exception:
+                pass
+            return
+
+        # 串口路径（原有逻辑）
         send_data_mutex.acquire()
-        self.ser[0].write(data)
-        send_data_mutex.release()
+        try:
+            self.ser[0].write(data)
+        finally:
+            send_data_mutex.release()
 
     # 打开串口
     def open_serial(self, row, port_var):
