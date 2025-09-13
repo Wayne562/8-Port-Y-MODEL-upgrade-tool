@@ -110,7 +110,7 @@ class SerialFlasherApp:
         port_var = tk.StringVar()
 
         # 每个串口行的串口显示框
-        port_label = tk.Label(frame, text=f"串口:", width=10, height=3, relief=tk.SUNKEN, font=("宋体", 12))
+        port_label = tk.Label(frame, text=f"串口", width=10, height=3, relief=tk.SUNKEN, font=("宋体", 12))
         port_label.grid(row=0, column=0, sticky=tk.E, padx=5, pady=0)
 
         # 每个串口行的串口下拉框显示的串口
@@ -119,7 +119,7 @@ class SerialFlasherApp:
 
         # 创建一个波特率的 Combobox 控件
         baudrate_var = tk.StringVar()
-        baudrate_combobox = ttk.Combobox(frame, textvariable=baudrate_var, state="readonly", width=20)
+        baudrate_combobox = ttk.Combobox(frame, textvariable=baudrate_var, state="readonly", width=25)
         baudrate_combobox['values'] = ["300", "600", "1200", "2400", "4800", "9600", "19200", "38400",
                                        "57600", "115200", "128000", "230400", "256000", "460800", "921600"]
         baudrate_combobox.grid(row=0, column=2, padx=5, pady=0)
@@ -207,7 +207,7 @@ class SerialFlasherApp:
         cfg_btn.grid(row=0, column=1, padx=5, pady=0)
 
         # Server IP 显示（只读）
-        server_ip_entry = tk.Entry(frame, textvariable=self.udp_server_ip_var, width=22, font=('宋体', 13),
+        server_ip_entry = tk.Entry(frame, textvariable=self.udp_server_ip_var, width=30, font=('宋体', 13),
                                    state="readonly")
         server_ip_entry.grid(row=0, column=2, padx=5, pady=0)
 
@@ -248,11 +248,12 @@ class SerialFlasherApp:
                 return ""
 
     def udp_config_dialog(self):
+        import ipaddress
         top = tk.Toplevel(self.root)
         top.title("UDP 配置")
         top.grab_set()  # 模态
 
-        # 取旧值或默认值
+        # 旧值/默认值
         lv_ip = self.udp_conf.get("local_ip") or self._guess_local_ip()
         lv_port = self.udp_conf.get("local_port") or ""
         sv_ip = self.udp_conf.get("server_ip") or ""
@@ -263,41 +264,111 @@ class SerialFlasherApp:
         v_server_ip = tk.StringVar(value=sv_ip)
         v_server_port = tk.StringVar(value=sv_port)
 
+        # ---- UI（把 Entry 先保存变量，便于高亮）----
         tk.Label(top, text="Local IP:").grid(row=0, column=0, sticky="e", padx=8, pady=6)
-        tk.Entry(top, textvariable=v_local_ip, width=24).grid(row=0, column=1, padx=8, pady=6)
+        e_local_ip = tk.Entry(top, textvariable=v_local_ip, width=24)
+        e_local_ip.grid(row=0, column=1, padx=8, pady=6)
 
         tk.Label(top, text="Local Port:").grid(row=1, column=0, sticky="e", padx=8, pady=6)
-        tk.Entry(top, textvariable=v_local_port, width=24).grid(row=1, column=1, padx=8, pady=6)
+        e_local_port = tk.Entry(top, textvariable=v_local_port, width=24)
+        e_local_port.grid(row=1, column=1, padx=8, pady=6)
 
         tk.Label(top, text="Server IP:").grid(row=2, column=0, sticky="e", padx=8, pady=6)
-        tk.Entry(top, textvariable=v_server_ip, width=24).grid(row=2, column=1, padx=8, pady=6)
+        e_server_ip = tk.Entry(top, textvariable=v_server_ip, width=24)
+        e_server_ip.grid(row=2, column=1, padx=8, pady=6)
 
         tk.Label(top, text="Server Port:").grid(row=3, column=0, sticky="e", padx=8, pady=6)
-        tk.Entry(top, textvariable=v_server_port, width=24).grid(row=3, column=1, padx=8, pady=6)
+        e_server_port = tk.Entry(top, textvariable=v_server_port, width=24)
+        e_server_port.grid(row=3, column=1, padx=8, pady=6)
 
-        def on_ok():
+        # ---- 小工具：高亮错误框 ----
+        def _mark_ok(widget, ok: bool):
             try:
-                # 基础校验
-                if v_local_ip.get():
-                    ipaddress.ip_address(v_local_ip.get())
-                if v_server_ip.get():
-                    ipaddress.ip_address(v_server_ip.get())
-                lp = int(v_local_port.get())
-                sp = int(v_server_port.get())
-                if not (0 <= lp <= 65535 and 0 <= sp <= 65535):
-                    raise ValueError("端口范围应为 0~65535")
-            except Exception as e:
-                messagebox.showinfo("提示", f"配置非法：{e}")
+                widget.configure(bg=("#FFFFFF" if ok else "#FFECEC"))
+            except Exception:
+                pass
+
+        # ---- 逐项校验，给出友好中文原因 ----
+        def on_ok():
+            errs = []
+            first_bad = None
+
+            # 预设安全默认值，避免“可能未赋值”的提示
+            lpt = 0  # Local Port 默认 0（留空表示让系统分配/不绑定）
+            spt = 0  # Server Port 必填，先给占位值，校验不通过会提前 return
+
+            # Local IP（可留空）
+            lip = v_local_ip.get().strip()
+            if lip:
+                try:
+                    ipaddress.ip_address(lip)
+                    _mark_ok(e_local_ip, True)
+                except ValueError:
+                    errs.append("Local IP 格式无效，例如：192.168.1.100")
+                    _mark_ok(e_local_ip, False)
+                    first_bad = first_bad or e_local_ip
+            else:
+                _mark_ok(e_local_ip, True)
+
+            # Local Port（可留空或 0；否则 0~65535 的整数）
+            lpt_raw = v_local_port.get().strip()
+            if lpt_raw == "":
+                lpt = 0
+                _mark_ok(e_local_port, True)
+            else:
+                if lpt_raw.isdigit():
+                    lpt = int(lpt_raw)
+                    if not (0 <= lpt <= 65535):
+                        errs.append("Local Port 超出范围（应为 0~65535）")
+                        _mark_ok(e_local_port, False)
+                        first_bad = first_bad or e_local_port
+                    else:
+                        _mark_ok(e_local_port, True)
+                else:
+                    errs.append("Local Port 必须是整数（0~65535）")
+                    _mark_ok(e_local_port, False)
+                    first_bad = first_bad or e_local_port
+
+            # Server IP（必填）
+            sip = v_server_ip.get().strip()
+            try:
+                ipaddress.ip_address(sip)
+                _mark_ok(e_server_ip, True)
+            except ValueError:
+                errs.append("Server IP 不能为空且必须是合法 IP（例如：192.168.1.200）")
+                _mark_ok(e_server_ip, False)
+                first_bad = first_bad or e_server_ip
+
+            # Server Port（必填 1~65535 的整数）
+            spt_raw = v_server_port.get().strip()
+            if spt_raw.isdigit():
+                spt = int(spt_raw)
+                if not (1 <= spt <= 65535):
+                    errs.append("Server Port 超出范围（应为 1~65535）")
+                    _mark_ok(e_server_port, False)
+                    first_bad = first_bad or e_server_port
+                else:
+                    _mark_ok(e_server_port, True)
+            else:
+                errs.append("Server Port 必须是整数（1~65535）")
+                _mark_ok(e_server_port, False)
+                first_bad = first_bad or e_server_port
+
+            # 有错误就提示并返回（不会用到上面的默认值）
+            if errs:
+                messagebox.showinfo("配置有误", "请检查以下项目：\n\n" + "\n".join(f"• {m}" for m in errs))
+                if first_bad:
+                    first_bad.focus_set()
                 return
 
+            # 通过：保存配置并更新显示
             self.udp_conf.update({
-                "local_ip": v_local_ip.get(),
-                "local_port": v_local_port.get(),
-                "server_ip": v_server_ip.get(),
-                "server_port": v_server_port.get(),
+                "local_ip": lip,
+                "local_port": str(lpt),
+                "server_ip": sip,
+                "server_port": str(spt),
             })
-            # 行内显示 server ip
-            self.udp_server_ip_var.set(self.udp_conf["server_ip"])
+            self.udp_server_ip_var.set(sip)
             top.destroy()
 
         def on_cancel():
