@@ -7,6 +7,7 @@ UPGRADE_V1.5.1
 3) UDP 连接成功：串口“打开/关闭”按钮置灰；失败：串口行恢复默认
 4) UDP 连接成功后，下面升级仍旧是 YMODEM，sender_getc/putc 自动走 UDP
 5) 调整UI布局，窗口最大化后，控件也随之调整
+6) 在配置弹窗界面新增’清除配置‘按键，替换掉原来的’取消‘按键
 """
 
 import logging
@@ -262,6 +263,16 @@ class SerialFlasherApp:
                 return ""
 
     def udp_config_dialog(self):
+        """
+        打开“UDP 配置”弹窗（模态）。
+        含 4 个字段：Local IP、Local Port、Server IP、Server Port。
+        - Local IP/Port 可留空（留空=不强制绑定/由系统选择网卡与临时端口）。
+        - Server IP/Port 必填，用于后续 UDP 发送目的地址。
+        成功点击“确定”后会校验并写入 self.udp_conf，同时调用
+        _update_udp_target_display() 刷新主界面行内展示（例如 "192.168.1.10:5000"）。
+        点击“清除配置”会清空四项配置并清空主界面显示。
+        仅负责收集/校验/保存配置，不在此处建立 UDP “连接”（UDP 无握手）。
+        """
         import ipaddress
         top = tk.Toplevel(self.root)
         top.title("UDP 配置")
@@ -304,6 +315,17 @@ class SerialFlasherApp:
 
         # ---- 确定：逐项校验 + 保存 ----
         def on_ok():
+            """
+            【UDP 配置弹窗】“确定”按钮回调：
+            1) 逐项校验用户输入：
+               - Local IP 可留空；若非空必须是合法 IPv4/IPv6。
+               - Local Port 允许留空或 0；若非空必须是 0~65535 整数。
+               - Server IP 必填，必须是合法 IP。
+               - Server Port 必填，1~65535 整数。
+            2) 校验失败：高亮对应输入框并弹出中文原因，不关闭弹窗。
+            3) 校验通过：写入 self.udp_conf，并更新主界面显示（ip[:port]），关闭弹窗。
+            不创建/关闭 socket，仅负责配置持久化与 UI 更新。
+            """
             errs = []
             first_bad = None
 
@@ -422,6 +444,14 @@ class SerialFlasherApp:
         btn_clear.grid(row=4, column=1, padx=8, pady=10)
 
     def _format_udp_target(self, ip: str, port: str) -> str:
+        """
+        将 (ip, port) 组合成显示文本。
+        - IPv4:  '192.168.1.10:5000'
+        - IPv6:  '[fe80::1]:5000'   （IPv6 用方括号包裹）
+        - 端口为空时仅返回 IP。
+        入参允许为 None/空字符串，都会被安全处理。
+        仅用于 UI 显示，不影响实际 socket 行为。
+        """
         ip = (ip or "").strip()
         port = (port or "").strip()
         if not ip and not port:
@@ -432,11 +462,31 @@ class SerialFlasherApp:
         return f"{ip}:{port}" if port else ip
 
     def _update_udp_target_display(self):
+        """
+        根据 self.udp_conf 内保存的 server_ip/server_port，
+        刷新 UDP 行上的只读输入框（显示为 ip[:port]）。
+        - 当两者均为空时，显示为空。
+        - 当 port 为空时，仅显示 IP。
+        该方法不做任何网络操作，仅更新 UI。
+        """
         sip = self.udp_conf.get("server_ip") or ""
         spt = self.udp_conf.get("server_port") or ""
         self.udp_server_ip_var.set(self._format_udp_target(sip, spt))
 
     def udp_connect(self):
+        """
+        启用 UDP 目标（为 socket 记录默认目的地址）。
+        流程：
+        1) 读取 self.udp_conf（local_ip/local_port/server_ip/server_port）并做基础校验。
+        2) 创建 UDP socket，必要时 bind(local_ip, local_port)，然后 connect(server_ip, server_port)。
+           注意：对于 UDP，connect() 不进行握手；只是在本地记录默认目的地址，
+           以及让 recv() 只接收来自该对端的数据，因此“连接成功”不代表对端在线。
+        3) 若你实现了探测逻辑（_udp_probe），可在此处发送探测包并判断是否收到回包，
+           以决定是否禁用串口按钮/提示“已验证”或“未验证”。
+        4) 成功启用后：更新 self.udp_sock/self.udp_connected，并联动 UI
+           （例如禁用“打开/关闭串口”按钮、启用“关闭”按钮等）。
+        失败时：清理 socket、恢复 UI 至默认状态并弹出提示。
+        """
         # 校验配置
         conf = self.udp_conf
         try:
@@ -489,6 +539,12 @@ class SerialFlasherApp:
             messagebox.showinfo("提示", f"UDP 连接失败：{e}")
 
     def udp_close(self):
+        """
+        关闭当前 UDP socket（若存在），并将 UDP 相关状态复位：
+        - 关闭 self.udp_sock，清空 self.udp_rx_buf，置 self.udp_connected=False。
+        - UI 恢复默认：允许重新“连接”UDP，串口按钮恢复可用。
+        不影响已打开的串口（如有），也不改动升级线程状态。
+        """
         try:
             if self.udp_sock:
                 self.udp_sock.close()
@@ -516,6 +572,14 @@ class SerialFlasherApp:
         return all_available_ports
 
     def sender_getc(self, size, row):
+        """
+        作为 YMODEM 的 getc 回调：读取 size 字节。
+        - 若 UDP 已启用且 self.udp_sock 存在：优先从 UDP 读取。
+          为适配 YMODEM 的“字节流”语义，这里用 self.udp_rx_buf 将 datagram 缓冲成字节流，
+          以满足上层反复 getc(1) 的读取方式（超时返回 None）。
+        - 否则：从串口 self.ser[0].read(size) 读取（未打开返回 None）。
+        该方法应为“非阻塞短超时”读取；出现 socket 超时/异常时返回 None，让上层继续轮询。
+        """
         # ✅ 如果 UDP 已连接，优先走 UDP
         if self.udp_connected and self.udp_sock:
             try:
@@ -539,6 +603,13 @@ class SerialFlasherApp:
         return self.ser[0].read(size) or None
 
     def sender_putc(self, data, row):
+        """
+        作为 YMODEM 的 putc 回调：发送 bytes 数据。
+        - 若 UDP 已启用：直接 self.udp_sock.send(data)。
+        - 否则：走串口 self.ser[0].write(data)；为避免并发写，使用 send_data_mutex 互斥。
+        本方法不抛异常到外层（发送异常可吞掉或按需记录日志），以免中断传输流程；
+        是否中止由上层根据 ACK/NAK 超时等行为自行判断。
+        """
         # ✅ UDP 已连接则走 UDP
         if self.udp_connected and self.udp_sock:
             try:
@@ -555,27 +626,60 @@ class SerialFlasherApp:
             send_data_mutex.release()
 
     # 打开串口
-    def open_serial(self, row, port_var):
-        selected_port = port_var.get()
-        selected_baudrate = self.serial_rows[0]['baudrate_combobox'].get()  # 获取所选的波特率
-        if selected_port:
-            try:
-                self.ser[0].port = selected_port
-                self.ser[0].baudrate = int(selected_baudrate)  # 设置波特率
-                if not self.ser[0].is_open:
-                    self.ser[0].open()
-                    print('baud rate:', self.serial_rows[0]['baudrate_combobox'].get())
-                    # 更新串口状态
-                    self.open_serial_status()
-                    # 记录已打开的串口信息
-                    port_info = {'name': selected_port, 'baudrate': selected_baudrate}
-                    self.opened_ports.append(port_info)
-                    self.opened_ports_count += 1
-            except serial.SerialException as e:
-                print(e)
-                messagebox.showinfo("提示", f"串口 {selected_port} 打开失败！")
-        elif not selected_port:
-            messagebox.showinfo("提示", "请先选择串口！")
+    def open_serial(self, idx, port_var):
+        """
+        打开串口：
+        1) 从 UI 读取端口号（port_var）与波特率（self.serial_rows[0]['baud rate_combobox']）。
+           - 若未选择或格式非法，弹窗提示并返回，不抛异常到控制台。
+        2) 若串口已开则先关闭，随后设置 port/baud rate/timeout 并执行 open()。
+        3) UI 联动：更新状态标签为“已连接：{port}@{baud}”，
+           将“打开串口”按钮置灰、“关闭串口”按钮高亮；失败则反向恢复并提示原因。
+        仅负责打开串口；不涉及 UDP 逻辑与升级线程。
+        """
+        port = (port_var.get() if port_var else "").strip()
+        # 从 UI 取波特率（你也可以通过保存的变量来取，这里用控件更直观）
+        try:
+            baud_str = self.serial_rows[0]['baudrate_combobox'].get().strip()
+        except Exception:
+            baud_str = ""
+
+        # 先做判空校验
+        if not port:
+            messagebox.showinfo("提示", "请选择串口！")
+            return
+        if not baud_str:
+            messagebox.showinfo("提示", "请选择波特率！")
+            return
+
+        # 再做格式校验
+        try:
+            baud = int(baud_str)
+        except ValueError:
+            messagebox.showinfo("提示", f"波特率格式不正确：{baud_str}")
+            return
+
+        # 打开串口
+        try:
+            if self.ser[0].is_open:
+                self.ser[0].close()
+            self.ser[0].port = port
+            self.ser[0].baudrate = baud
+            self.ser[0].timeout = 0.2
+            self.ser[0].open()
+
+            # UI 状态更新
+            if 'conn_label' in self.serial_rows[0]:
+                self.serial_rows[0]['conn_label'].configure(text=f"已连接：{port}@{baud}", fg="green")
+            self.serial_rows[0]['open_button'].configure(state=tk.DISABLED)
+            self.serial_rows[0]['close_button'].configure(state=tk.NORMAL)
+
+        except Exception as e:
+            # 捕获任何异常并提示给用户（而不是只在控制台报错）
+            messagebox.showinfo("提示", f"打开串口失败：{e}")
+            if 'conn_label' in self.serial_rows[0]:
+                self.serial_rows[0]['conn_label'].configure(text="未连接", fg="red")
+            self.serial_rows[0]['open_button'].configure(state=tk.NORMAL)
+            self.serial_rows[0]['close_button'].configure(state=tk.DISABLED)
 
     # 关闭串口
     # 在 close_serial 方法中获取所选的波特率并关闭串口
