@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-UPGRADE_V1.7
-在1.6.1版本基础上新增取消升级按键及功能
-1) 每行新增取消升级按键
-2) 新增取消升级功能实现
-3) 在发送升级指令后和握手循环内加入取消判断（支持 ymodem_sender 标志与 per-row 事件）
-4) 在升级的3个阶段都增加了日志打印，可以显示具体是在哪个阶段取消升级（upgrade canceled (before handshake)、upgrade canceled (during handshake)、upgrade canceled (during transfer)）
-5）修复串口连接成功后UDP配置仍然能点击的问题
-6）每个函数都增加了注释
-7）版本号更新到V1.7
+UPGRADE_V1.8
+在1.7版本基础上新增version文件管理版本
+1) 新增version文件
+2) 打印版本号改成logging方式
+3) 版本号更新到V1.8
+
 """
 
 import logging
@@ -26,10 +23,11 @@ import serial
 import serial.tools.list_ports
 
 from ymodem import YMODEM
+from version import __app_name__, full_version
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-SCRIPT_VERSION = "1.7"
+SCRIPT_VERSION = "1.8"
 send_data_mutex = threading.Lock()
 
 
@@ -49,7 +47,7 @@ class SerialFlasherApp:
         """
         self.log = logging.getLogger('YReporter')
         self.root = root
-        self.root.title("UPGRADE_V1.7")
+        self.root.title(f"{__app_name__} v{full_version()}")
 
         self.ser = [serial.Serial(bytesize=8,
                                   stopbits=1,
@@ -1284,8 +1282,7 @@ class SerialFlasherApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # root.geometry("800x800")  # 设置窗口大小
-    # root.grid_propagate(False)  # 防止窗口大小自动调整
     app = SerialFlasherApp(root)
+    # ✅ 启动时打印版本（新增）
+    logging.getLogger("YReporter").info("App start. Script Version: %s", SCRIPT_VERSION)
     root.mainloop()
-    print('Script Version:', SCRIPT_VERSION)
