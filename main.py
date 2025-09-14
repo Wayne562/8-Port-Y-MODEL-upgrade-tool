@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-UPGRADE_V1.6.1
-在原有版本基础上新增 UDP 行与配置/连接功能：
-1) 串口行下面新增 UDP 行（UDP 标签 → 配置 → Server IP 显示 → 连接 → 关闭）
-2) “配置”弹窗：local ip / local port / server ip / server port
-3) UDP 连接成功：串口“打开/关闭”按钮置灰；失败：串口行恢复默认
-4) UDP 连接成功后，下面升级仍旧是 YMODEM，sender_getc/putc 自动走 UDP
-5) 调整UI布局，窗口最大化后，控件也随之调整
-6) 在配置弹窗界面新增’清除配置‘按键，替换掉原来的’取消‘按键
-7) 修复了没有选择波特率时打开串口不会弹窗提示的问题
-8) 给许多方法增加了开头的注释
-9) 版本号更新到V1.6.1
-10) 主文件名改为main.py
-11)增加每行文件选择后文件目录记忆的功能
+UPGRADE_V1.7
+在1.6.1版本基础上新增取消升级按键及功能
+1) 每行新增取消升级按键
+2) 新增取消升级功能实现
+3) 在发送升级指令后和握手循环内加入取消判断（支持 ymodem_sender 标志与 per-row 事件）
+4) 在升级的3个阶段都增加了日志打印，可以显示具体是在哪个阶段取消升级（upgrade canceled (before handshake)、upgrade canceled (during handshake)、upgrade canceled (during transfer)）
 """
 
 import logging
@@ -33,7 +26,7 @@ from ymodem import YMODEM
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-SCRIPT_VERSION = "1.6.1"
+SCRIPT_VERSION = "1.7"
 send_data_mutex = threading.Lock()
 
 
@@ -41,7 +34,7 @@ class SerialFlasherApp:
     def __init__(self, root):
         self.log = logging.getLogger('YReporter')
         self.root = root
-        self.root.title("UPGRADE_V1.6.1")
+        self.root.title("UPGRADE_V1.7")
 
         self.ser = [serial.Serial(bytesize=8,
                                   stopbits=1,
