@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-UPGRADE_V1.6
+UPGRADE_V1.6.1
 在原有版本基础上新增 UDP 行与配置/连接功能：
 1) 串口行下面新增 UDP 行（UDP 标签 → 配置 → Server IP 显示 → 连接 → 关闭）
 2) “配置”弹窗：local ip / local port / server ip / server port
@@ -10,8 +10,9 @@ UPGRADE_V1.6
 6) 在配置弹窗界面新增’清除配置‘按键，替换掉原来的’取消‘按键
 7) 修复了没有选择波特率时打开串口不会弹窗提示的问题
 8) 给许多方法增加了开头的注释
-9) 版本号更新到V1.6
+9) 版本号更新到V1.6.1
 10) 主文件名改为main.py
+11)增加每行文件选择后文件目录记忆的功能
 """
 
 import logging
@@ -32,7 +33,7 @@ from ymodem import YMODEM
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-SCRIPT_VERSION = "1.6"
+SCRIPT_VERSION = "1.6.1"
 send_data_mutex = threading.Lock()
 
 
@@ -40,7 +41,7 @@ class SerialFlasherApp:
     def __init__(self, root):
         self.log = logging.getLogger('YReporter')
         self.root = root
-        self.root.title("UPGRADE_V1.6")
+        self.root.title("UPGRADE_V1.6.1")
 
         self.ser = [serial.Serial(bytesize=8,
                                   stopbits=1,
