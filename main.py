@@ -73,6 +73,10 @@ class SerialFlasherApp:
 
         self.interface_names = ["MAIN", "IMU", "M1", "M2", "M3", "MP", "MOTOR", "JS_IMU"]
 
+        # 记住每行的上次目录（长度 = 接口行数），以及全局最后一次目录
+        self.last_open_dirs = [None] * 8
+        self.last_open_dir = None
+
         # 类变量用于存储可用串口列表
         SerialFlasherApp.available_ports = []
 
@@ -563,11 +567,70 @@ class SerialFlasherApp:
             self.ui_call(self.udp_row['close_button'].configure, state=tk.DISABLED)
 
     # 选择文件函数
-    def select_file(self, row):  # 修改这里，为select_file函数添加一个row参数
-        filename = filedialog.askopenfilename()
-        if filename:
-            self.file_path[row - 1].set(filename)  # 更新对应interface行的file_path变量
-            self.rows[row - 1]['flash_button']['state'] = tk.NORMAL  # 文件选择后，将对应行的烧录按钮状态设置为正常
+    def select_file(self, row):
+        """
+        选择升级文件：
+        - 记住“每一行”的上次选择目录（last_open_dirs[row-1]）
+        - 次选：全局最后一次目录（last_open_dir）
+        - 次次选：该行当前已填文件的所在目录
+        - 兜底：当前工作目录
+        """
+        import os
+        # 你的代码里 row 是 1-based，这里转成 0-based 索引
+        idx = row - 1 if row >= 1 else row
+
+        # 计算 initialdir（多级回退，确保存在）
+        suggest_dir = None
+
+        # ① 每行上次目录
+        if getattr(self, "last_open_dirs", None):
+            d = self.last_open_dirs[idx]
+            if d and os.path.isdir(d):
+                suggest_dir = d
+
+        # ② 全局上次目录
+        if not suggest_dir:
+            d = getattr(self, "last_open_dir", None)
+            if d and os.path.isdir(d):
+                suggest_dir = d
+
+        # ③ 该行当前文件的所在目录
+        if not suggest_dir:
+            cur = self.file_path[idx].get() if idx < len(self.file_path) else ""
+            d = os.path.dirname(cur) if cur else ""
+            if d and os.path.isdir(d):
+                suggest_dir = d
+
+        # ④ 兜底：当前工作目录
+        if not suggest_dir:
+            try:
+                suggest_dir = os.getcwd()
+            except Exception:
+                # 再兜底到用户主目录
+                suggest_dir = os.path.expanduser("~")
+
+        path = filedialog.askopenfilename(
+            title="选择升级文件",
+            filetypes=[("Binary", "*.bin"), ("All Files", "*.*")],
+            initialdir=suggest_dir
+        )
+
+        if not path:
+            return
+
+        # 写回 UI
+        self.file_path[idx].set(path)
+        # 启用“升级”按钮（保留你的原逻辑）
+        try:
+            self.rows[idx]['flash_button'].configure(state=tk.NORMAL)
+        except Exception:
+            pass
+
+        # 记住目录：每行 + 全局
+        sel_dir = os.path.dirname(path)
+        self.last_open_dir = sel_dir
+        if getattr(self, "last_open_dirs", None) and 0 <= idx < len(self.last_open_dirs):
+            self.last_open_dirs[idx] = sel_dir
 
     # 获取当前可用的串口列表
     def get_available_ports(self):
