@@ -6,6 +6,8 @@ UPGRADE_V1.7
 2) 新增取消升级功能实现
 3) 在发送升级指令后和握手循环内加入取消判断（支持 ymodem_sender 标志与 per-row 事件）
 4) 在升级的3个阶段都增加了日志打印，可以显示具体是在哪个阶段取消升级（upgrade canceled (before handshake)、upgrade canceled (during handshake)、upgrade canceled (during transfer)）
+5）修复串口连接成功后UDP配置仍然能点击的问题
+6）版本号更新到V1.7
 """
 
 import logging
@@ -745,6 +747,13 @@ class SerialFlasherApp:
                 self.serial_rows[0]['conn_label'].configure(text=f"已连接：{port}@{baud}", fg="green")
             self.serial_rows[0]['open_button'].configure(state=tk.DISABLED)
             self.serial_rows[0]['close_button'].configure(state=tk.NORMAL)
+            # ✅ 禁用 UDP：配置/连接
+            try:
+                self.udp_row['cfg_button'].configure(state=tk.DISABLED)
+                self.udp_row['connect_button'].configure(state=tk.DISABLED)
+                # UDP 关闭按钮保持原状态（通常是 DISABLED）
+            except Exception:
+                pass
 
         except Exception as e:
             # 捕获任何异常并提示给用户（而不是只在控制台报错）
@@ -753,6 +762,12 @@ class SerialFlasherApp:
                 self.serial_rows[0]['conn_label'].configure(text="未连接", fg="red")
             self.serial_rows[0]['open_button'].configure(state=tk.NORMAL)
             self.serial_rows[0]['close_button'].configure(state=tk.DISABLED)
+            # ✅ 恢复 UDP：配置/连接
+            try:
+                self.udp_row['cfg_button'].configure(state=tk.NORMAL)
+                self.udp_row['connect_button'].configure(state=tk.NORMAL)
+            except Exception:
+                pass
 
     # 关闭串口
     # 在 close_serial 方法中获取所选的波特率并关闭串口
@@ -770,10 +785,23 @@ class SerialFlasherApp:
                 self.opened_ports_count -= 1
                 # 从已打开的串口列表中移除已关闭的串口
                 self.opened_ports = [port for port in self.opened_ports if port['name'] != selected_port]
+                # ✅ 恢复 UDP：配置/连接
+                try:
+                    self.udp_row['cfg_button'].configure(state=tk.NORMAL)
+                    self.udp_row['connect_button'].configure(state=tk.NORMAL)
+                except Exception:
+                    pass
             except serial.SerialException as e:
                 print(e)
                 messagebox.showinfo(title="提示", message='串口关闭失败！')
                 self.close_serial_status()  # 串口关闭失败，则关闭串口按键状态恢复到打开串口前的状态
+                # ✅ 禁用 UDP：配置/连接
+                try:
+                    self.udp_row['cfg_button'].configure(state=tk.DISABLED)
+                    self.udp_row['connect_button'].configure(state=tk.DISABLED)
+                    # UDP 关闭按钮保持原状态（通常是 DISABLED）
+                except Exception:
+                    pass
                 return
 
     # 根据串口打开成功更新各个控件的状态
