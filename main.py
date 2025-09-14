@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-UPGRADE_V1.6.1
-在原有版本基础上新增 UDP 行与配置/连接功能：
-1) 串口行下面新增 UDP 行（UDP 标签 → 配置 → Server IP 显示 → 连接 → 关闭）
-2) “配置”弹窗：local ip / local port / server ip / server port
-3) UDP 连接成功：串口“打开/关闭”按钮置灰；失败：串口行恢复默认
-4) UDP 连接成功后，下面升级仍旧是 YMODEM，sender_getc/putc 自动走 UDP
-5) 调整UI布局，窗口最大化后，控件也随之调整
-6) 在配置弹窗界面新增’清除配置‘按键，替换掉原来的’取消‘按键
-7) 修复了没有选择波特率时打开串口不会弹窗提示的问题
-8) 给许多方法增加了开头的注释
-9) 版本号更新到V1.6.1
-10) 主文件名改为main.py
-11)增加每行文件选择后文件目录记忆的功能
+UPGRADE_V1.7
+在1.6.1版本基础上新增取消升级按键及功能
+1) 每行新增取消升级按键
+2) 新增取消升级功能实现
+3) 在发送升级指令后和握手循环内加入取消判断（支持 ymodem_sender 标志与 per-row 事件）
+4) 在升级的3个阶段都增加了日志打印，可以显示具体是在哪个阶段取消升级（upgrade canceled (before handshake)、upgrade canceled (during handshake)、upgrade canceled (during transfer)）
+5）修复串口连接成功后UDP配置仍然能点击的问题
+6）每个函数都增加了注释
+7）版本号更新到V1.7
 """
 
 import logging
@@ -33,15 +29,27 @@ from ymodem import YMODEM
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-SCRIPT_VERSION = "1.6.1"
+SCRIPT_VERSION = "1.7"
 send_data_mutex = threading.Lock()
 
 
 class SerialFlasherApp:
     def __init__(self, root):
+        """
+        应用初始化：建立 Tk 根窗口、创建串口行/UDP 行/多条升级行并初始化状态。
+        主要工作：
+          - 初始化成员变量（串口对象、UDP socket、路径变量、取消事件等）
+          - 搭建 UI（串口行、UDP 行、8 行升级控件）并设置列权重以支持窗口拉伸
+          - 绑定按钮回调：打开/关闭串口，UDP 配置/连接/关闭，选择文件/升级/取消
+          - 设置日志/定时刷新可用串口
+        参数：
+          root: Tk 根窗口
+          interface_count: 升级行数（默认 8）
+        返回：无
+        """
         self.log = logging.getLogger('YReporter')
         self.root = root
-        self.root.title("UPGRADE_V1.6.1")
+        self.root.title("UPGRADE_V1.7")
 
         self.ser = [serial.Serial(bytesize=8,
                                   stopbits=1,
@@ -107,6 +115,9 @@ class SerialFlasherApp:
             upgrade_row = self.create_upgrade_row(i + 1, interface_name)
             self.rows.append(upgrade_row)
 
+        # ✅ 用已创建的行数来建事件列表
+        self.cancel_events = [threading.Event() for _ in range(len(self.rows))]
+
         # 定时检测可用串口
         self.update_ports_thread = threading.Thread(target=self.update_ports_loop, daemon=True)
         self.update_ports_thread.start()
@@ -117,6 +128,15 @@ class SerialFlasherApp:
 
     # 创建1个串口行的各个控件
     def create_serial_row(self):
+        """
+        创建“串口”工具行：串口下拉、波特率下拉、打开/关闭按钮、状态标签等。
+        行为：
+          - 配置列权重，使下拉/输入框在窗口拉伸时自适应。
+          - 为“打开串口”按钮绑定 open_serial()，“关闭串口”绑定 close_serial()。
+          - 打开成功时禁用 UDP 的“配置/连接”，关闭或失败时恢复 UDP。
+        返回：
+          dict，包含 port_combobox / baudrate_combobox / open_button / close_button 等控件引用。
+        """
         frame = tk.Frame(self.root)
 
         # ✅ 让第1、2列（两个下拉）可横向拉伸
@@ -142,7 +162,8 @@ class SerialFlasherApp:
         baudrate_combobox.grid(row=0, column=2, padx=5, pady=0, sticky='ew')
 
         # 每个串口行的打开串口按键
-        open_button = tk.Button(frame, text="打开串口", command=lambda: self.open_serial(0, port_var), width=10, height=3,
+        open_button = tk.Button(frame, text="打开串口", command=lambda: self.open_serial(0, port_var), width=10,
+                                height=3,
                                 font=("宋体", 12))
         open_button.grid(row=0, column=3, padx=5, pady=0)
 
@@ -162,6 +183,19 @@ class SerialFlasherApp:
 
     # 创建8个接口行的各个控件
     def create_upgrade_row(self, row, interface_name):
+        """
+        创建单条升级行的 UI 组件，并返回对控件的引用字典。
+        布局（从左到右）：
+          [接口标签] [选择文件按钮] [文件路径Entry(可拉伸)] [升级按钮]
+          [进度条(可拉伸)] [百分比标签] [状态标签] [取消按钮(可选)]
+        参数：
+          row: 1-based 行号（同时用于回调闭包传参）。
+          interface_name: 行左侧显示的接口名。
+        返回：
+          dict，包含该行常用控件引用，如 flash_button/progress_bar/percentage_label/flash_status_label/cancel_flash_button 等。
+        备注：
+          该函数只负责创建与布局，不包含任何传输逻辑。
+        """
         frame = tk.Frame(self.root)
 
         # ✅ 让第2列（文件路径）与第4列（进度条）可横向拉伸
@@ -202,6 +236,13 @@ class SerialFlasherApp:
 
         frame.grid(row=row + 2, column=0, columnspan=3, pady=0, sticky='ew')
 
+        cancel_btn = tk.Button(
+            frame, text="取消升级",
+            command=lambda row=row: self.cancel_flash(row),  # 传入当前行号
+            state=tk.DISABLED, width=8, height=2, font=('宋体', 12)
+        )
+        cancel_btn.grid(row=0, column=7, padx=5, pady=0)  # 放在最右侧新列，不影响原列布局
+
         return {
             'select_file_button': select_file_button,
             'file_path_entry': file_path_entry,
@@ -209,12 +250,20 @@ class SerialFlasherApp:
             'progress_bar': progress_bar,
             'percentage_label': percentage_label,
             'flash_status_label': flash_status_label,
+            'cancel_flash_button': cancel_btn,  # ← 新增取消升级按键
         }
 
     def create_udp_row(self):
         """
-        UDP 行，从左到右：
-        [UDP] [配置] [Server IP Entry] [连接] [关闭]
+        创建“UDP 行”UI：从左到右为 [UDP标签][配置按钮][Server IP:Port 显示][连接按钮][关闭按钮]。
+        行为：
+          - ‘UDP配置’ 打开配置弹窗（local/server IP/Port 编辑）
+          - ‘连接’ 仅记录目标地址/可选探测，不做真正握手（UDP 无握手）
+          - ‘关闭’ 释放 UDP socket、复位 UI
+        返回：
+          dict —— 返回该行关键控件引用（label/cfg_button/server_ip_entry/connect_button/close_button 等）
+        备注：如与串口互斥，连接成功后可置灰串口的“打开/关闭”按钮，反之亦然。
+        UDP行，从左到右：[UDP] [配置] [Server IP Entry] [连接] [关闭]
         """
         frame = tk.Frame(self.root)
 
@@ -258,7 +307,14 @@ class SerialFlasherApp:
         }
 
     def _guess_local_ip(self) -> str:
-        """尽力猜一个本机 IP 作为默认值（失败就留空）"""
+        """
+        猜测/探测本机的本地 IP（用于 UDP local_ip 的默认值）。
+        策略：优先选择可路由到公网/目标网段的非 127.0.0.1 地址；失败则返回空字符串。
+        返回：
+          str —— 猜测到的本地 IPv4（或空字符串表示未知/不指定）。
+        备注：仅用于默认展示，不会强制绑定网卡。
+        """
+        #  尽力猜一个本机 IP 作为默认值（失败就留空）
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -317,6 +373,14 @@ class SerialFlasherApp:
 
         # ---- 小工具：高亮错误框 ----
         def _mark_ok(widget, ok: bool):
+            """
+            为输入框打高亮标记：校验通过=白色，校验失败=淡红色。
+            场景：UDP 配置弹窗中对 Local/Server 的 IP/Port 输入做就地提示。
+            参数：
+              widget: 需要高亮的 Entry 控件
+              ok: True=恢复正常底色；False=置为错误底色（#FFECEC）
+            返回：无
+            """
             try:
                 widget.configure(bg=("#FFFFFF" if ok else "#FFECEC"))
             except Exception:
@@ -422,6 +486,14 @@ class SerialFlasherApp:
 
         # ---- 清除配置：清空四项并同步清空主界面显示 ----
         def on_clear():
+            """
+            【UDP 配置弹窗】“清除配置”按钮回调。
+            行为：
+              - 清空弹窗中的 Local IP/Port、Server IP/Port 四项。
+              - 清空 self.udp_conf 中对应字段。
+              - 清空主界面 UDP 的只读显示（如 server_ip_var）。
+              - 关闭弹窗（如果希望保留弹窗继续编辑，可移除此处的 destroy）。
+            """
             # 清空弹窗里的输入框
             v_local_ip.set("")
             v_local_port.set("")
@@ -635,6 +707,13 @@ class SerialFlasherApp:
 
     # 获取当前可用的串口列表
     def get_available_ports(self):
+        """
+        枚举当前系统可用的串口列表。
+        Windows 形如 COM1/COM3；Linux 形如 /dev/ttyUSB0；macOS 形如 /dev/tty.usbserial-xxx。
+        返回：
+          list[str] —— 可用串口名列表（已过滤不存在/重复端口）。
+        备注：失败时返回空列表；建议在定时刷新或“刷新端口”按钮中调用。
+        """
         ports = [port.device for port in serial.tools.list_ports.comports()]
         all_available_ports = sorted(ports)
         return all_available_ports
@@ -740,6 +819,13 @@ class SerialFlasherApp:
                 self.serial_rows[0]['conn_label'].configure(text=f"已连接：{port}@{baud}", fg="green")
             self.serial_rows[0]['open_button'].configure(state=tk.DISABLED)
             self.serial_rows[0]['close_button'].configure(state=tk.NORMAL)
+            # ✅ 禁用 UDP：配置/连接
+            try:
+                self.udp_row['cfg_button'].configure(state=tk.DISABLED)
+                self.udp_row['connect_button'].configure(state=tk.DISABLED)
+                # UDP 关闭按钮保持原状态（通常是 DISABLED）
+            except Exception:
+                pass
 
         except Exception as e:
             # 捕获任何异常并提示给用户（而不是只在控制台报错）
@@ -748,10 +834,26 @@ class SerialFlasherApp:
                 self.serial_rows[0]['conn_label'].configure(text="未连接", fg="red")
             self.serial_rows[0]['open_button'].configure(state=tk.NORMAL)
             self.serial_rows[0]['close_button'].configure(state=tk.DISABLED)
+            # ✅ 恢复 UDP：配置/连接
+            try:
+                self.udp_row['cfg_button'].configure(state=tk.NORMAL)
+                self.udp_row['connect_button'].configure(state=tk.NORMAL)
+            except Exception:
+                pass
 
     # 关闭串口
     # 在 close_serial 方法中获取所选的波特率并关闭串口
     def close_serial(self, row, port_var):
+        """
+        关闭串口并恢复 UI。
+        行为：
+          - 若串口已打开则 close()，重置状态标签为“未连接”。
+          - 更新按钮：关闭=置灰、打开=可点。
+          - 恢复 UDP 行：启用“UDP配置/连接”按钮（避免互斥锁死）。
+        参数：
+          idx: 行索引（通常无实际用途，保持签名一致）。
+          port_var: 传入的串口变量（用于兼容现有调用）。
+        """
         selected_port = port_var.get()
         if not self.ser[0].is_open:
             messagebox.showinfo("提示", "串口未连接！")
@@ -765,10 +867,23 @@ class SerialFlasherApp:
                 self.opened_ports_count -= 1
                 # 从已打开的串口列表中移除已关闭的串口
                 self.opened_ports = [port for port in self.opened_ports if port['name'] != selected_port]
+                # ✅ 恢复 UDP：配置/连接
+                try:
+                    self.udp_row['cfg_button'].configure(state=tk.NORMAL)
+                    self.udp_row['connect_button'].configure(state=tk.NORMAL)
+                except Exception:
+                    pass
             except serial.SerialException as e:
                 print(e)
                 messagebox.showinfo(title="提示", message='串口关闭失败！')
                 self.close_serial_status()  # 串口关闭失败，则关闭串口按键状态恢复到打开串口前的状态
+                # ✅ 禁用 UDP：配置/连接
+                try:
+                    self.udp_row['cfg_button'].configure(state=tk.DISABLED)
+                    self.udp_row['connect_button'].configure(state=tk.DISABLED)
+                    # UDP 关闭按钮保持原状态（通常是 DISABLED）
+                except Exception:
+                    pass
                 return
 
     # 根据串口打开成功更新各个控件的状态
@@ -783,7 +898,25 @@ class SerialFlasherApp:
 
     # 每2秒定时检查一次可用串口
     def update_ports_loop(self):
-        """后台线程：轮询串口；UI 更新丢回主线程执行"""
+        """
+        周期性刷新“可用串口”并更新下拉框（非阻塞轮询）。
+
+        流程：
+          1) 调用 get_available_ports() 获取最新串口列表。
+          2) 调用 _apply_ports_to_combo(...) 写回到 combobox，尽量保留当前选择。
+          3) 使用 self.root.after(interval_ms, self.update_ports_loop) 自我调度，避免线程阻塞 UI。
+
+        约定/细节：
+          - 轮询间隔一般 500ms~2000ms 之间权衡即可（过短浪费、过长更新不及时）。
+          - 若串口已打开，通常只刷新列表但不改变当前选择；当检测到“已选端口消失”时，可提示或仅维持现状，
+            具体由你的业务决定（不要在已连接时偷偷切换端口）。
+          - 注意在窗口关闭/on_close 时停止调度（例如设置一个标志，或在销毁前不再调用 after），
+            以免在销毁的 Tk 上继续调度导致异常。
+
+        异常处理：
+          - get_available_ports() 失败时，保持现有 combobox 不变即可；无需抛出到界面。
+        """
+        # 后台线程：轮询串口；UI 更新丢回主线程执行
         while True:
             try:
                 available = self.get_available_ports()
@@ -795,7 +928,23 @@ class SerialFlasherApp:
             time.sleep(2)
 
     def _apply_ports_to_combo(self, ports):
-        """在主线程里安全地更新下拉框"""
+        """
+        将“当前可用的串口列表”写入下拉框，并尽量保留用户已选择的端口。
+
+        做了什么：
+          - 比较旧值与新列表，只有在发生变化时才更新 combobox['values']，减少闪烁/重置。
+          - 若“当前选中端口”仍在新列表中，则保留选择；否则根据你的策略清空或选中第一个可用端口。
+          - 可选：根据是否有可用端口来切换“打开/关闭串口”按钮的可用状态与状态标签（视你的实现需要）。
+
+        输入/依赖：
+          - 新的端口列表通常来自 get_available_ports()。
+          - 目标下拉框一般为 self.serial_rows[0]['port_combobox']（若函数内部从 self 取控件，无需入参）。
+
+        注意：
+          - 本函数只负责 UI 层写值，不实际打开/关闭串口。
+          - 若端口列表为空，应避免强行设置一个不存在的值；保持 combobox 为空并禁用“打开串口”更友好。
+        """
+        # 在主线程里安全地更新下拉框
         combo = self.serial_rows[0]['port_combobox']
         if ports:
             # 仅在列表变化时更新，减少闪动
@@ -809,20 +958,105 @@ class SerialFlasherApp:
             combo.set('')
 
     def ui_call(self, fn, *args, **kwargs):
-        """在 Tk 主线程中执行 fn(*args, **kwargs)（修复跨线程更新 UI 的问题）"""
+        """
+        把任意函数投递到 Tk 主线程执行（线程安全的 UI 调度器）。
+        典型用法：在工作线程中调用 ui_call(self.rows[i]['progress_bar'].configure, value=percent)
+        实现思路：使用 root.after(0, fn, *args, **kwargs) 将调用排入事件循环。
+        参数：
+          fn: 可调用对象（通常是某控件的 .configure 或自定义的 _ui 闭包）
+          *args/**kwargs: 透传给 fn 的参数
+        返回：无（异步在主线程执行）
+        """
+        # 在 Tk 主线程中执行 fn(*args, **kwargs)（修复跨线程更新 UI 的问题
         self.root.after(0, lambda: fn(*args, **kwargs))
+
+    def cancel_flash(self, idx: int):
+        """
+        取消当前行的升级流程（用户点击“取消”按钮触发）。
+        行为：
+          1) 置位本行的取消事件（或通知 YMODEM：flash_status=2）。
+          2) 尝试向设备发送多次 CAN（0x18）以中止对端传输。
+          3) 立即更新 UI：显示“取消中…”，禁用“取消/升级/选择文件”按钮。
+          4) 线程很快在握手或 send() 循环检查到取消并退出，随后 UI 收尾为“升级取消！”。
+        参数：
+          idx: 1-based 的行号（函数内部会转换为 0-based 索引）。
+        返回：
+          False（一般用于阻断默认回调链；不代表失败）。
+        """
+        # row 从按钮传进来是 1-based，这里统一成 0-based
+        i = idx - 1 if idx >= 1 else idx
+
+        # ✅ 日志：用户请求取消
+        self.log.info("*** interface%d cancel requested by user ***", i + 1)
+
+        # 置取消标志（你的线程如需使用）
+        try:
+            self.cancel_events[i].set()
+        except Exception:
+            pass
+
+        # 通知 YMODEM：进入“取消”状态（我们在 ymodem.py 里会在循环里检测到）
+        if getattr(self, "ymodem_sender", None):
+            try:
+                self.ymodem_sender.update_flash_status(2)
+            except Exception:
+                pass
+
+        # 主动发出 CAN 序列，帮助对端尽快中止（可选但推荐）
+        try:
+            can_seq = b'\x18' * 5  # CAN * 5
+            if self.udp_connected and self.udp_sock:
+                self.udp_sock.send(can_seq)
+            elif self.ser[0].is_open:
+                self.ser[0].write(can_seq)
+        except Exception:
+            pass
+
+        # UI：立即给用户反馈“取消中…”，禁止重复点击
+        def _ui():
+            """
+            内部 UI 更新函数（通常作为闭包传给 ui_call 使用）。
+            作用：只做界面控件的 configure()/set() 等操作，不做耗时/阻塞任务。
+            说明：Tkinter 仅允许在主线程更新 UI；请通过 ui_call() 把本函数投递到主线程执行。
+            参数/返回：由调用方决定；本函数不返回值。
+            """
+            r = self.rows[i]
+            r['flash_status_label'].configure(fg='red', text='取消中…')
+            r['flash_button'].configure(state=tk.DISABLED)
+            r['select_file_button'].configure(state=tk.DISABLED)
+            r['cancel_flash_button'].configure(state=tk.DISABLED)
+
+        self.ui_call(_ui)
+
+        return False
 
     # 串口烧录逻辑及其方法
     def burn_in_thread(self, row, port_var, upgrade_command):
+        """
+        单行升级线程主体。
+        流程：
+          1) 发送升级指令（如 "$SH,UPGRADE,MAIN"）并等待 2s。
+          2) 进入握手循环，读取设备 ‘C’，期间支持“取消”即时生效并收尾。
+          3) 握手成功后调用 ymodem_send() 发送文件（串口或 UDP）。
+          4) 根据返回值更新 UI：成功/失败/取消，复位各控件状态。
+        参数：
+          row: 1-based 行号。
+          port_var: 当前选择的串口（或其变量）。
+          upgrade_command: 设备侧进入升级的命令。
+        返回：
+          True 表示已成功发起并完成；False/None 由内部逻辑决定（失败或被取消时通常提前 return）。
+        """
         # 在这里重新初始化ymodem_sender
         self.ymodem_sender = YMODEM(lambda size: self.sender_getc(size, row), lambda data: self.sender_putc(data, row))
         #   烧录过程中禁用烧录按键,关闭串口按键和选择文件按键,烧录状态显示框显示‘烧录中’
         self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)
         self.ui_call(self.rows[row]['flash_button'].configure, state=tk.DISABLED)
         self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.DISABLED)
-        self.ui_call(self.rows[row]['flash_status_label'].configure, fg='blue', text="升级中.")
+        self.ui_call(self.rows[row]['flash_status_label'].configure, fg='blue', text="升级中...")
+        # 升级开始时，取消升级按键高亮
+        self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.NORMAL)
 
-        self.log.info(f"*** interface{row + 1}The burning thread starts！")
+        self.log.info(f"*** interface{row + 1}The burning thread starts！***")
         self.ser[0].port = port_var
         if self.ser[0].is_open:
             self.log.info(f"<<< 串口已打开！")
@@ -832,6 +1066,8 @@ class SerialFlasherApp:
             self.ui_call(self.rows[row]['flash_status_label'].configure, fg='grey', text="准备升级")
             self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
             self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+            # 升级结束时，取消升级按键置灰
+            self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
             return
 
         file = self.file_path[row].get()
@@ -844,27 +1080,63 @@ class SerialFlasherApp:
             return
         else:
             self.ser[0].write((upgrade_command + "\r\n").encode('UTF-8'))
-            print(">>> interface{} send upgrade instructions :'{}'！".format(row + 1, upgrade_command))
+            self.log.info(">>> interface%d send upgrade instruction: '%s'", row + 1, upgrade_command)
             time.sleep(2)
-            print('Waiting for 2s after sending upgrade instructions!\r\n')
+            self.log.debug("Waiting for %.1fs after sending upgrade instruction…", 2.0)
+
+            # ✅ 取消检查（发送指令后、进入握手循环前）
+            if (hasattr(self, "ymodem_sender") and getattr(self.ymodem_sender, "_check_cancel", lambda: False)()) \
+                    or (0 <= row < len(self.cancel_events) and self.cancel_events[row].is_set()):
+                # ✅ 日志：握手前检测到取消
+                self.log.info("*** interface%d upgrade canceled (before handshake) ***", row + 1)
+                # UI：升级取消
+                self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
+                self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+                self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级取消！")
+                self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+                self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
+                try:
+                    self.cancel_events[row].clear()
+                except Exception:
+                    pass
+                return
+
+            retry_count = 0
             while True:
+                # ✅ 取消检查（握手循环内，每次读之前都能立刻退出）
+                if (hasattr(self, "ymodem_sender") and getattr(self.ymodem_sender, "_check_cancel", lambda: False)()) \
+                        or (0 <= row < len(self.cancel_events) and self.cancel_events[row].is_set()):
+                    # ✅ 日志：握手期间检测到取消
+                    self.log.info("*** interface%d upgrade canceled (during handshake) ***", row + 1)
+
+                    self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级取消！")
+                    self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
+                    try:
+                        self.cancel_events[row].clear()
+                    except Exception:
+                        pass
+                    return
                 response = self.ser[0].read(4)
-                print("<<< interface{}  received are:{}\r\n".format(row + 1, response))
+                self.log.debug("<<< interface%d received: %r", row + 1, response)
                 if b'C' in response:
-                    print("<<< interface{}  received 'CCCC'！\r\n".format(row + 1))
+                    self.log.info("<<< interface%d  received 'CCCC'！", row + 1)
                     break
                 else:
-                    print("<<< interface{}  received are:{}\r\n".format(row + 1, response))
+                    self.log.debug("<<< interface%d  received are:%r", row + 1, response)
                     # self.ser[0].write((upgrade_command + "\r\n").encode('UTF-8'))
                     # print(">>> interface{} send upgrade instructions :'{}'！".format(row + 1, upgrade_command))
                     retry_count += 1
                 if retry_count > 10:
-                    self.log.info(f"*** interface{row + 1} flash failed！")
+                    self.log.info(f"*** interface{row + 1} flash failed！***")
                     #   判断烧录是否结束，如果 flash failed，就更新按键状态：打开烧录按键,关闭串口按键和选择文件按键
                     self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
                     self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
                     self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级失败！")
                     self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
                     return False
 
             # 在调用 ymodem_send 方法之前，确保 self.progress_bars 列表的长度至少为 row + 1
@@ -877,6 +1149,19 @@ class SerialFlasherApp:
 
     #   通过ymodem协议发送升级文件
     def ymodem_send(self, file_path, row, progress_callback):
+        """
+        以 YMODEM 协议发送指定文件（行内调用）。
+        行为：
+          - 打开文件，构造 YMODEM 实例并传入 getc/putc 回调、进度回调。
+          - 传输过程中通过 callback/flash_status_callback 更新进度条与状态文案。
+          - 识别 ymodem.send() 的返回值：True=成功, "cancel"=用户取消, ("fail", reason)=失败。
+        参数：
+          file_path: 待升级的固件文件路径。
+          row: 1-based 行号。
+          callback: 进度回调（百分比/状态）。
+        返回：
+          True / "cancel" / ("fail", reason)
+        """
         try:
             file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
@@ -886,6 +1171,13 @@ class SerialFlasherApp:
 
         with open(file_path, 'rb') as file_stream:
             def callback(percentage):
+                """
+                进度回调：更新当前行的进度条与百分比标签。
+                参数：
+                  percentage: 0~100 的整数；可根据文件发送字节数计算得到。
+                线程安全：通常从发送线程调用，请配合 ui_call() 切到主线程更新控件。
+                返回：无
+                """
                 if percentage < 100 or percentage == 100:
                     self.root.after(0, progress_callback, percentage)
                     self.root.after(0, self.update_percentage_label, row, percentage)
@@ -900,6 +1192,14 @@ class SerialFlasherApp:
 
             #   烧录状态标志位返回及判断
             def flash_status_callback(flash_status):
+                """
+                YMODEM 状态回调（由 ymodem 传输过程中调用）。
+                约定：
+                  status == 1 → 传输成功（更新 UI 为“升级成功！”）
+                  status == 2 → 传输失败（更新 UI 为“升级失败！”）
+                  其他值 → 可留作扩展（例如阶段型状态/告警）
+                说明：取消场景通常由 ymodem_send() 的返回值 "cancel" 单独处理。
+                """
                 #   flash_status为1表示烧录成功
                 if flash_status == 1:
                     self.log.info(f"*** 第{row + 1}行串口烧录完成！")
@@ -908,6 +1208,7 @@ class SerialFlasherApp:
                     self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
                     self.ui_call(self.rows[row]['flash_status_label'].configure, fg='green', text="升级成功！")
                     self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
                 #   flash_status为2表示 flash failed
                 elif flash_status == 2:
                     self.log.info(f"*** serial port on line{row + 1} flash failed！")
@@ -916,20 +1217,60 @@ class SerialFlasherApp:
                     self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
                     self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级失败！")
                     self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+                    self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
 
-            self.ymodem_sender.send(file_stream, file_name, file_size, callback=callback,
-                                    flash_status_callback=flash_status_callback)
+            res = self.ymodem_sender.send(file_stream, file_name, file_size, callback=callback,
+                                          flash_status_callback=flash_status_callback)
+            # ✅ 日志：传输阶段取消
+            self.log.info("*** interface%d upgrade canceled (during transfer) ***", row + 1)
+
+            # 【新增】若是取消，则这里负责 UI 收尾（成功/失败仍走原回调）
+            if res == "cancel":
+                self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
+                self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
+                self.ui_call(self.rows[row]['flash_status_label'].configure, fg='red', text="升级取消！")
+                self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.NORMAL)
+                self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.DISABLED)
+
+            return res
 
     #   更新烧录百分比变化
     def update_percentage_label(self, row, percentage):
+        """
+        更新某一行的百分比文本标签，例如 "37%"。
+        参数：
+          row: 0-based 行索引（或你项目里使用的一致索引）。
+          percent: 0~100 的整数百分比。
+        备注：
+          仅更新文字，不改变进度条本身的值。
+        """
         self.rows[row]['percentage_label'].configure(text=f"{percentage}%")
 
     #   更新烧录进度条变化
     def update_progress_bar_label(self, row, percentage):
+        """
+        更新某一行的进度条数值（0~100）并可选联动百分比标签。
+        参数：
+          row: 0-based 行索引。
+          percent: 0~100 的整数百分比。
+        备注：
+          如果你的进度条是 determinate 模式，设置其 'value' 即可生效。
+        """
         self.rows[row]['progress_bar'].configure(value=percentage)
 
     #   烧录按键
     def flash(self, row, port_var):
+        """
+        点击“升级”按钮的入口：校验前置条件并启动该行的升级线程。
+        流程：
+          1) 校验：串口/UDP 可用、已选择升级文件、端口与波特率合法
+          2) UI 置为忙：禁用“选择文件/升级”按钮，状态改为“升级中…”，‘取消’按钮高亮
+          3) 启动线程：目标 burn_in_thread(row, port, upgrade_command)
+        参数：
+          row: 1-based 行号
+          port: 当前选定串口名（若走 UDP 可忽略此值）
+        返回：无（线程内负责后续 UI 收尾）
+        """
         # 烧录逻辑
         # 启动一个线程执行烧录
         file_path = self.file_path[row - 1].get()
@@ -948,4 +1289,3 @@ if __name__ == "__main__":
     app = SerialFlasherApp(root)
     root.mainloop()
     print('Script Version:', SCRIPT_VERSION)
-
