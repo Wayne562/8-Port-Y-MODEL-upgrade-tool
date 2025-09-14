@@ -47,6 +47,8 @@ class SerialFlasherApp:
         self.close_all_button_enabled = False
         self.lock = threading.Lock()
         self.ymodem_sender = YMODEM(lambda size: self.sender_getc(size, row), lambda data: self.sender_putc(data, row))
+        # 让根窗口第0列可拉伸（根上所有子 Frame 都在 column=0）
+        self.root.grid_columnconfigure(0, weight=1)
 
         # 文件选择部分
         self.file_path = [tk.StringVar() for _ in range(1, 9)]  # 修改这里，为每个interface行创建一个file_path变量
@@ -106,6 +108,10 @@ class SerialFlasherApp:
     def create_serial_row(self):
         frame = tk.Frame(self.root)
 
+        # ✅ 让第1、2列（两个下拉）可横向拉伸
+        frame.grid_columnconfigure(1, weight=1)
+        frame.grid_columnconfigure(2, weight=1)
+
         # 每个串口行选定的串口
         port_var = tk.StringVar()
 
@@ -114,15 +120,15 @@ class SerialFlasherApp:
         port_label.grid(row=0, column=0, sticky=tk.E, padx=5, pady=0)
 
         # 每个串口行的串口下拉框显示的串口
-        port_combobox = ttk.Combobox(frame, textvariable=port_var, state="readonly", width=20, )
-        port_combobox.grid(row=0, column=1, padx=5, pady=0)
+        port_combobox = ttk.Combobox(frame, textvariable=port_var, state="readonly", width=20)
+        port_combobox.grid(row=0, column=1, padx=5, pady=0, sticky='ew')
 
         # 创建一个波特率的 Combobox 控件
         baudrate_var = tk.StringVar()
         baudrate_combobox = ttk.Combobox(frame, textvariable=baudrate_var, state="readonly", width=25)
         baudrate_combobox['values'] = ["300", "600", "1200", "2400", "4800", "9600", "19200", "38400",
                                        "57600", "115200", "128000", "230400", "256000", "460800", "921600"]
-        baudrate_combobox.grid(row=0, column=2, padx=5, pady=0)
+        baudrate_combobox.grid(row=0, column=2, padx=5, pady=0, sticky='ew')
 
         # 每个串口行的打开串口按键
         open_button = tk.Button(frame, text="打开串口", command=lambda: self.open_serial(0, port_var), width=10, height=3,
@@ -147,6 +153,10 @@ class SerialFlasherApp:
     def create_upgrade_row(self, row, interface_name):
         frame = tk.Frame(self.root)
 
+        # ✅ 让第2列（文件路径）与第4列（进度条）可横向拉伸
+        frame.grid_columnconfigure(2, weight=2)
+        frame.grid_columnconfigure(4, weight=1)
+
         # 每个接口行的接口显示框
         upgrade_label = tk.Label(frame, text=f"{interface_name}", width=8, height=2, relief=tk.SUNKEN, )
         upgrade_label.grid(row=0, column=0, sticky=tk.E, padx=5, pady=0)
@@ -159,7 +169,7 @@ class SerialFlasherApp:
         # 每个接口行的文件显示Entry
         file_path_entry = tk.Entry(frame, textvariable=self.file_path[row - 1], width=30,
                                    font=('宋体', 13))  # 使用对应interface行的file_path变量
-        file_path_entry.grid(row=0, column=2, padx=5, pady=0)
+        file_path_entry.grid(row=0, column=2, padx=5, pady=0, sticky='ew')  # 文件显示 Entry（✅ 加 sticky）
 
         # 每个接口行的烧录按键
         flash_button = tk.Button(frame, text="升级",
@@ -169,7 +179,7 @@ class SerialFlasherApp:
 
         # 烧录进度条控件
         progress_bar = ttk.Progressbar(frame, orient=tk.HORIZONTAL, length=200, mode='determinate')
-        progress_bar.grid(row=0, column=4, padx=5, pady=0)
+        progress_bar.grid(row=0, column=4, padx=5, pady=0, sticky='ew')  # 进度条（✅ 加 sticky；length=200 只是初始宽度）
 
         # 烧录进度条百分比
         percentage_label = tk.Label(frame, text="0%")
@@ -197,6 +207,9 @@ class SerialFlasherApp:
         """
         frame = tk.Frame(self.root)
 
+        # ✅ 让第2列（Server IP 输入框）可横向拉伸
+        frame.grid_columnconfigure(2, weight=1)
+
         # label
         udp_label = tk.Label(frame, text="UDP", width=10, height=3, relief=tk.SUNKEN, font=("宋体", 12))
         udp_label.grid(row=0, column=0, sticky=tk.E, padx=5, pady=0)
@@ -209,7 +222,7 @@ class SerialFlasherApp:
         # Server IP 显示（只读）
         server_ip_entry = tk.Entry(frame, textvariable=self.udp_server_ip_var, width=30, font=('宋体', 13),
                                    state="readonly")
-        server_ip_entry.grid(row=0, column=2, padx=5, pady=0)
+        server_ip_entry.grid(row=0, column=2, padx=5, pady=0, sticky='ew')
 
         # 连接按钮
         connect_btn = tk.Button(frame, text="连接", width=10, height=3, font=("宋体", 12),
