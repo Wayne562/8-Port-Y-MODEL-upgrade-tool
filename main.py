@@ -902,7 +902,7 @@ class SerialFlasherApp:
         i = idx - 1 if idx >= 1 else idx
 
         # ✅ 日志：用户请求取消
-        self.log.info("*** interface%d cancel requested by user", i + 1)
+        self.log.info("*** interface%d cancel requested by user ***", i + 1)
 
         # 置取消标志（你的线程如需使用）
         try:
@@ -961,11 +961,11 @@ class SerialFlasherApp:
         self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.DISABLED)
         self.ui_call(self.rows[row]['flash_button'].configure, state=tk.DISABLED)
         self.ui_call(self.rows[row]['select_file_button'].configure, state=tk.DISABLED)
-        self.ui_call(self.rows[row]['flash_status_label'].configure, fg='blue', text="升级中.")
+        self.ui_call(self.rows[row]['flash_status_label'].configure, fg='blue', text="升级中...")
         # 升级开始时，取消升级按键高亮
         self.ui_call(self.rows[row]['cancel_flash_button'].configure, state=tk.NORMAL)
 
-        self.log.info(f"*** interface{row + 1}The burning thread starts！")
+        self.log.info(f"*** interface{row + 1}The burning thread starts！***")
         self.ser[0].port = port_var
         if self.ser[0].is_open:
             self.log.info(f"<<< 串口已打开！")
@@ -997,7 +997,7 @@ class SerialFlasherApp:
             if (hasattr(self, "ymodem_sender") and getattr(self.ymodem_sender, "_check_cancel", lambda: False)()) \
                     or (0 <= row < len(self.cancel_events) and self.cancel_events[row].is_set()):
                 # ✅ 日志：握手前检测到取消
-                self.log.info("*** interface%d upgrade canceled (before handshake)", row + 1)
+                self.log.info("*** interface%d upgrade canceled (before handshake) ***", row + 1)
                 # UI：升级取消
                 self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
                 self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
@@ -1016,7 +1016,7 @@ class SerialFlasherApp:
                 if (hasattr(self, "ymodem_sender") and getattr(self.ymodem_sender, "_check_cancel", lambda: False)()) \
                         or (0 <= row < len(self.cancel_events) and self.cancel_events[row].is_set()):
                     # ✅ 日志：握手期间检测到取消
-                    self.log.info("*** interface%d upgrade canceled (during handshake)", row + 1)
+                    self.log.info("*** interface%d upgrade canceled (during handshake) ***", row + 1)
 
                     self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
                     self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
@@ -1039,7 +1039,7 @@ class SerialFlasherApp:
                     # print(">>> interface{} send upgrade instructions :'{}'！".format(row + 1, upgrade_command))
                     retry_count += 1
                 if retry_count > 10:
-                    self.log.info(f"*** interface{row + 1} flash failed！")
+                    self.log.info(f"*** interface{row + 1} flash failed！***")
                     #   判断烧录是否结束，如果 flash failed，就更新按键状态：打开烧录按键,关闭串口按键和选择文件按键
                     self.ui_call(self.serial_rows[0]['close_button'].configure, state=tk.NORMAL)
                     self.ui_call(self.rows[row]['flash_button'].configure, state=tk.NORMAL)
@@ -1116,7 +1116,7 @@ class SerialFlasherApp:
             res = self.ymodem_sender.send(file_stream, file_name, file_size, callback=callback,
                                           flash_status_callback=flash_status_callback)
             # ✅ 日志：传输阶段取消
-            self.log.info("*** interface%d upgrade canceled (during transfer)", row + 1)
+            self.log.info("*** interface%d upgrade canceled (during transfer) ***", row + 1)
 
             # 【新增】若是取消，则这里负责 UI 收尾（成功/失败仍走原回调）
             if res == "cancel":
