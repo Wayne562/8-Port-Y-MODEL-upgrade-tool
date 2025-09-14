@@ -6,6 +6,7 @@ UPGRADE_V1.5.1
 2) “配置”弹窗：local ip / local port / server ip / server port
 3) UDP 连接成功：串口“打开/关闭”按钮置灰；失败：串口行恢复默认
 4) UDP 连接成功后，下面升级仍旧是 YMODEM，sender_getc/putc 自动走 UDP
+5) 调整UI布局，窗口最大化后，控件也随之调整
 """
 
 import logging
@@ -381,7 +382,7 @@ class SerialFlasherApp:
                 "server_ip": sip,
                 "server_port": str(spt),
             })
-            self.udp_server_ip_var.set(sip)
+            self._update_udp_target_display()
             top.destroy()
 
         def on_cancel():
@@ -391,6 +392,21 @@ class SerialFlasherApp:
         btn_ok.grid(row=4, column=0, padx=8, pady=10)
         btn_cancel = tk.Button(top, text="取消", width=10, command=on_cancel)
         btn_cancel.grid(row=4, column=1, padx=8, pady=10)
+
+    def _format_udp_target(self, ip: str, port: str) -> str:
+        ip = (ip or "").strip()
+        port = (port or "").strip()
+        if not ip and not port:
+            return ""
+        # IPv6 用 [ip]:port 的形式展示
+        if ":" in ip and not (ip.startswith("[") and ip.endswith("]")):
+            ip = f"[{ip}]"
+        return f"{ip}:{port}" if port else ip
+
+    def _update_udp_target_display(self):
+        sip = self.udp_conf.get("server_ip") or ""
+        spt = self.udp_conf.get("server_port") or ""
+        self.udp_server_ip_var.set(self._format_udp_target(sip, spt))
 
     def udp_connect(self):
         # 校验配置
@@ -420,6 +436,7 @@ class SerialFlasherApp:
                 sock.bind((lip, lpt))
             # "连接"一个 UDP 目标，便于后续 recv() 只收该对端数据
             sock.connect((sip, spt))
+            self._update_udp_target_display()
             self.udp_sock = sock
             self.udp_connected = True
             self.udp_rx_buf.clear()
