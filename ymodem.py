@@ -32,6 +32,23 @@ class YMODEM(object):
         self.flash_status = 0  # 烧录状态，初始化为 0，表示未开始烧录
         self.flash_status_callback = None
 
+    def update_flash_status(self, new_status: int):
+        """外部通知当前发送要取消等状态。约定：2 表示请求取消。"""
+        self.flash_status = new_status
+
+    def _check_cancel(self) -> bool:
+        """是否被请求取消。"""
+        return self.flash_status == 2
+
+    def _cancel_send(self):
+        """统一的取消退出：发两次 CAN，并返回特殊标记给上层，不触发失败回调。"""
+        try:
+            self.putc(CAN)
+            self.putc(CAN)
+        except Exception:
+            pass
+        return "cancel"
+
     # send abort(CAN) twice
     def abort(self, count=2):
         for _ in range(count):
@@ -65,6 +82,8 @@ class YMODEM(object):
         error_count = 0
         cancel = 0
         while True:
+            if self._check_cancel():
+                return self._cancel_send()
             char = self.getc(1)
             if char:
                 if char == CRC:
@@ -116,6 +135,8 @@ class YMODEM(object):
         cancel = 0
         # Receive response of first packet
         while True:
+            if self._check_cancel():
+                return self._cancel_send()
             char = self.getc(1)
             if char:
                 if char == ACK:
@@ -151,6 +172,8 @@ class YMODEM(object):
         sequence = 1
         sleep(1)
         while True:
+            if self._check_cancel():
+                return self._cancel_send()
             # Read raw data from file stream
             data = file_stream.read(packet_size)
             if not data:
@@ -163,6 +186,8 @@ class YMODEM(object):
             checksum = self._make_send_checksum(data)
 
             while True:
+                if self._check_cancel():
+                    return self._cancel_send()
                 data_for_send = header + data + checksum
                 # print(len(data_for_send))
                 # data_in_hexstring = "".join("%02x" % b for b in data_for_send)
@@ -172,6 +197,8 @@ class YMODEM(object):
                 self.log.info("Packet " + str(sequence) + " >>>" + str(len(data_for_send)))
                 error_count = 0
                 while True:
+                    if self._check_cancel():
+                        return self._cancel_send()
                     char = self.getc(1)
                     if char == ACK:
                         break
@@ -219,6 +246,8 @@ class YMODEM(object):
         # Send EOT and expect final ACK
         error_count = 0
         while True:
+            if self._check_cancel():
+                return self._cancel_send()
             self.putc(EOT)
             self.log.info(">>> EOT")
             char = self.getc(1)
@@ -249,6 +278,8 @@ class YMODEM(object):
 
         error_count = 0
         while True:
+            if self._check_cancel():
+                return self._cancel_send()
             char = self.getc(1)
             if char == ACK:
                 if callback:
