@@ -60,6 +60,31 @@ class YMODEM(object):
 
     def send(self, file_stream, file_name, file_size=0, retry=20, timeout=15, callback=None,
              flash_status_callback=None):
+        """
+        YMODEM 发送主流程。
+        阶段：
+          1) 等待接收端握手字符 'C'（CRC 模式），支持取消（flash_status==2）。
+          2) 发送首包（包0）：包含文件名与长度；等待对端 ACK/CRC。
+          3) 分块发送数据包（128/1024字节），每块后等待 ACK/NAK，重试不超过 retry。
+          4) 发送 EOT 结束，等待 ACK；再发空包完成会话。
+        回调：
+          - callback(percent:int, stage:str|int)：用于 UI 更新，如百分比/阶段状态。
+          - flash_status_callback(status:int)：外部状态更新（1=成功、2=失败、其它自定义）。
+        取消：
+          - 当 flash_status==2 或外部调用 update_flash_status(2) 时，任意等待点会即时返回 "cancel"。
+        参数：
+          file_stream: 已打开的二进制文件对象（由调用方管理关闭）。
+          file_name: 发送给对端的文件名（包0使用）。
+          file_size: 文件总字节数（用于百分比计算与包0）。
+          retry: 单次等待 ACK/NAK 的最大重试次数。
+          timeout: 单次等待超时（秒）（取决于 getc 的实现，可不使用）。
+          callback: 进度/阶段回调。
+          flash_status_callback: 外部状态回调（可为 None）。
+        返回：
+          True: 发送成功。
+          "cancel": 用户或上层请求取消。
+          ("fail", reason): 发送失败及原因字符串。
+        """
         try:
             packet_size = dict(
                 ymodem=1024,
@@ -313,6 +338,18 @@ class YMODEM(object):
 
     # Header byte
     def _make_send_header(self, packet_size, sequence):
+        """
+        构建首包（包0）的 payload：以 ASCII 编码的“文件名 + 0x00 + 文件大小 + 0x00”。
+        规则：
+          - 文件名不包含路径，只传基础名（必要时调用方先做 basename）。
+          - 文件大小为十进制 ASCII 字符串。
+          - 其余字节填充 0x00 直至包长（128/1024）由上层封装完成。
+        参数：
+          filename: 文件名（不含路径）。
+          filesize: 文件大小（字节）。
+        返回：
+          bytes：首包负载（不含 SOH/STX、块序号、反码与校验）。
+        """
         assert packet_size in (128, 1024), packet_size
         _bytes = []
         if packet_size == 128:
@@ -324,12 +361,31 @@ class YMODEM(object):
 
     # Make check code
     def _make_send_checksum(self, data):
+        """
+        计算发送包的校验字段。
+        参数：
+          data: 需要计算校验的数据体（不含 SOH/STX、块序号、反码）。
+          use_crc: True=CRC16-IBM/XMODEM（2字节），False=8位累加和（1字节）。
+        返回：
+          bytes：校验值字节序列（长度取决于 use_crc）。
+        备注：
+          YMODEM 常用 CRC16（'C' 握手），部分设备可能仍用校验和模式。
+        """
         _bytes = []
         crc = self.calc_crc(data)
         _bytes.extend([crc >> 8, crc & 0xff])
         return bytearray(_bytes)
 
     def _verify_recv_checksum(self, data):
+        """
+        校验接收包的完整性（用于解析对端回包时）。
+        参数：
+          data: 被校验的数据体。
+          checksum: 对端携带的校验字段（1或2字节）。
+          use_crc: True=按 CRC16 校验；False=按 8位累加和校验。
+        返回：
+          True 表示校验通过；False 表示校验不通过（需重发或失败处理）。
+        """
         _checksum = bytearray(data[-2:])
         their_sum = (_checksum[0] << 8) + _checksum[1]
         data = data[:-2]

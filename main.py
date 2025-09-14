@@ -115,6 +115,15 @@ class SerialFlasherApp:
 
     # 创建1个串口行的各个控件
     def create_serial_row(self):
+        """
+        创建“串口”工具行：串口下拉、波特率下拉、打开/关闭按钮、状态标签等。
+        行为：
+          - 配置列权重，使下拉/输入框在窗口拉伸时自适应。
+          - 为“打开串口”按钮绑定 open_serial()，“关闭串口”绑定 close_serial()。
+          - 打开成功时禁用 UDP 的“配置/连接”，关闭或失败时恢复 UDP。
+        返回：
+          dict，包含 port_combobox / baudrate_combobox / open_button / close_button 等控件引用。
+        """
         frame = tk.Frame(self.root)
 
         # ✅ 让第1、2列（两个下拉）可横向拉伸
@@ -161,6 +170,19 @@ class SerialFlasherApp:
 
     # 创建8个接口行的各个控件
     def create_upgrade_row(self, row, interface_name):
+        """
+        创建单条升级行的 UI 组件，并返回对控件的引用字典。
+        布局（从左到右）：
+          [接口标签] [选择文件按钮] [文件路径Entry(可拉伸)] [升级按钮]
+          [进度条(可拉伸)] [百分比标签] [状态标签] [取消按钮(可选)]
+        参数：
+          row: 1-based 行号（同时用于回调闭包传参）。
+          interface_name: 行左侧显示的接口名。
+        返回：
+          dict，包含该行常用控件引用，如 flash_button/progress_bar/percentage_label/flash_status_label/cancel_flash_button 等。
+        备注：
+          该函数只负责创建与布局，不包含任何传输逻辑。
+        """
         frame = tk.Frame(self.root)
 
         # ✅ 让第2列（文件路径）与第4列（进度条）可横向拉伸
@@ -429,6 +451,14 @@ class SerialFlasherApp:
 
         # ---- 清除配置：清空四项并同步清空主界面显示 ----
         def on_clear():
+            """
+            【UDP 配置弹窗】“清除配置”按钮回调。
+            行为：
+              - 清空弹窗中的 Local IP/Port、Server IP/Port 四项。
+              - 清空 self.udp_conf 中对应字段。
+              - 清空主界面 UDP 的只读显示（如 server_ip_var）。
+              - 关闭弹窗（如果希望保留弹窗继续编辑，可移除此处的 destroy）。
+            """
             # 清空弹窗里的输入框
             v_local_ip.set("")
             v_local_port.set("")
@@ -772,6 +802,16 @@ class SerialFlasherApp:
     # 关闭串口
     # 在 close_serial 方法中获取所选的波特率并关闭串口
     def close_serial(self, row, port_var):
+        """
+        关闭串口并恢复 UI。
+        行为：
+          - 若串口已打开则 close()，重置状态标签为“未连接”。
+          - 更新按钮：关闭=置灰、打开=可点。
+          - 恢复 UDP 行：启用“UDP配置/连接”按钮（避免互斥锁死）。
+        参数：
+          idx: 行索引（通常无实际用途，保持签名一致）。
+          port_var: 传入的串口变量（用于兼容现有调用）。
+        """
         selected_port = port_var.get()
         if not self.ser[0].is_open:
             messagebox.showinfo("提示", "串口未连接！")
@@ -846,6 +886,18 @@ class SerialFlasherApp:
         self.root.after(0, lambda: fn(*args, **kwargs))
 
     def cancel_flash(self, idx: int):
+        """
+        取消当前行的升级流程（用户点击“取消”按钮触发）。
+        行为：
+          1) 置位本行的取消事件（或通知 YMODEM：flash_status=2）。
+          2) 尝试向设备发送多次 CAN（0x18）以中止对端传输。
+          3) 立即更新 UI：显示“取消中…”，禁用“取消/升级/选择文件”按钮。
+          4) 线程很快在握手或 send() 循环检查到取消并退出，随后 UI 收尾为“升级取消！”。
+        参数：
+          idx: 1-based 的行号（函数内部会转换为 0-based 索引）。
+        返回：
+          False（一般用于阻断默认回调链；不代表失败）。
+        """
         # row 从按钮传进来是 1-based，这里统一成 0-based
         i = idx - 1 if idx >= 1 else idx
 
@@ -889,6 +941,20 @@ class SerialFlasherApp:
 
     # 串口烧录逻辑及其方法
     def burn_in_thread(self, row, port_var, upgrade_command):
+        """
+        单行升级线程主体。
+        流程：
+          1) 发送升级指令（如 "$SH,UPGRADE,MAIN"）并等待 2s。
+          2) 进入握手循环，读取设备 ‘C’，期间支持“取消”即时生效并收尾。
+          3) 握手成功后调用 ymodem_send() 发送文件（串口或 UDP）。
+          4) 根据返回值更新 UI：成功/失败/取消，复位各控件状态。
+        参数：
+          row: 1-based 行号。
+          port_var: 当前选择的串口（或其变量）。
+          upgrade_command: 设备侧进入升级的命令。
+        返回：
+          True 表示已成功发起并完成；False/None 由内部逻辑决定（失败或被取消时通常提前 return）。
+        """
         # 在这里重新初始化ymodem_sender
         self.ymodem_sender = YMODEM(lambda size: self.sender_getc(size, row), lambda data: self.sender_putc(data, row))
         #   烧录过程中禁用烧录按键,关闭串口按键和选择文件按键,烧录状态显示框显示‘烧录中’
@@ -992,6 +1058,19 @@ class SerialFlasherApp:
 
     #   通过ymodem协议发送升级文件
     def ymodem_send(self, file_path, row, progress_callback):
+        """
+        以 YMODEM 协议发送指定文件（行内调用）。
+        行为：
+          - 打开文件，构造 YMODEM 实例并传入 getc/putc 回调、进度回调。
+          - 传输过程中通过 callback/flash_status_callback 更新进度条与状态文案。
+          - 识别 ymodem.send() 的返回值：True=成功, "cancel"=用户取消, ("fail", reason)=失败。
+        参数：
+          file_path: 待升级的固件文件路径。
+          row: 1-based 行号。
+          callback: 进度回调（百分比/状态）。
+        返回：
+          True / "cancel" / ("fail", reason)
+        """
         try:
             file_size = os.path.getsize(file_path)
             file_name = os.path.basename(file_path)
@@ -1051,10 +1130,26 @@ class SerialFlasherApp:
 
     #   更新烧录百分比变化
     def update_percentage_label(self, row, percentage):
+        """
+        更新某一行的百分比文本标签，例如 "37%"。
+        参数：
+          row: 0-based 行索引（或你项目里使用的一致索引）。
+          percent: 0~100 的整数百分比。
+        备注：
+          仅更新文字，不改变进度条本身的值。
+        """
         self.rows[row]['percentage_label'].configure(text=f"{percentage}%")
 
     #   更新烧录进度条变化
     def update_progress_bar_label(self, row, percentage):
+        """
+        更新某一行的进度条数值（0~100）并可选联动百分比标签。
+        参数：
+          row: 0-based 行索引。
+          percent: 0~100 的整数百分比。
+        备注：
+          如果你的进度条是 determinate 模式，设置其 'value' 即可生效。
+        """
         self.rows[row]['progress_bar'].configure(value=percentage)
 
     #   烧录按键
