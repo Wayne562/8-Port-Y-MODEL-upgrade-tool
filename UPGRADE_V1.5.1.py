@@ -278,7 +278,7 @@ class SerialFlasherApp:
         v_server_ip = tk.StringVar(value=sv_ip)
         v_server_port = tk.StringVar(value=sv_port)
 
-        # ---- UI（把 Entry 先保存变量，便于高亮）----
+        # ---- UI ----
         tk.Label(top, text="Local IP:").grid(row=0, column=0, sticky="e", padx=8, pady=6)
         e_local_ip = tk.Entry(top, textvariable=v_local_ip, width=24)
         e_local_ip.grid(row=0, column=1, padx=8, pady=6)
@@ -302,14 +302,14 @@ class SerialFlasherApp:
             except Exception:
                 pass
 
-        # ---- 逐项校验，给出友好中文原因 ----
+        # ---- 确定：逐项校验 + 保存 ----
         def on_ok():
             errs = []
             first_bad = None
 
-            # 预设安全默认值，避免“可能未赋值”的提示
-            lpt = 0  # Local Port 默认 0（留空表示让系统分配/不绑定）
-            spt = 0  # Server Port 必填，先给占位值，校验不通过会提前 return
+            # 预设默认值，避免“可能未赋值”告警
+            lpt = 0
+            spt = 0
 
             # Local IP（可留空）
             lip = v_local_ip.get().strip()
@@ -324,7 +324,7 @@ class SerialFlasherApp:
             else:
                 _mark_ok(e_local_ip, True)
 
-            # Local Port（可留空或 0；否则 0~65535 的整数）
+            # Local Port（可留空或 0）
             lpt_raw = v_local_port.get().strip()
             if lpt_raw == "":
                 lpt = 0
@@ -353,7 +353,7 @@ class SerialFlasherApp:
                 _mark_ok(e_server_ip, False)
                 first_bad = first_bad or e_server_ip
 
-            # Server Port（必填 1~65535 的整数）
+            # Server Port（必填 1~65535）
             spt_raw = v_server_port.get().strip()
             if spt_raw.isdigit():
                 spt = int(spt_raw)
@@ -368,30 +368,58 @@ class SerialFlasherApp:
                 _mark_ok(e_server_port, False)
                 first_bad = first_bad or e_server_port
 
-            # 有错误就提示并返回（不会用到上面的默认值）
             if errs:
                 messagebox.showinfo("配置有误", "请检查以下项目：\n\n" + "\n".join(f"• {m}" for m in errs))
                 if first_bad:
                     first_bad.focus_set()
                 return
 
-            # 通过：保存配置并更新显示
+            # 保存配置 & 刷新主界面显示（显示 ip:port 或只 ip）
             self.udp_conf.update({
                 "local_ip": lip,
                 "local_port": str(lpt),
                 "server_ip": sip,
                 "server_port": str(spt),
             })
-            self._update_udp_target_display()
+            # 如果你有 _update_udp_target_display() 就用它；没有就直接设置：
+            try:
+                self._update_udp_target_display()
+            except Exception:
+                self.udp_server_ip_var.set(f"{sip}:{spt}" if sip and spt else sip)
+
             top.destroy()
 
-        def on_cancel():
+        # ---- 清除配置：清空四项并同步清空主界面显示 ----
+        def on_clear():
+            # 清空弹窗里的输入框
+            v_local_ip.set("")
+            v_local_port.set("")
+            v_server_ip.set("")
+            v_server_port.set("")
+            _mark_ok(e_local_ip, True)
+            _mark_ok(e_local_port, True)
+            _mark_ok(e_server_ip, True)
+            _mark_ok(e_server_port, True)
+
+            # 清空全局配置
+            self.udp_conf.update({
+                "local_ip": "",
+                "local_port": "",
+                "server_ip": "",
+                "server_port": "",
+            })
+            # 清空主界面显示
+            self.udp_server_ip_var.set("")  # 若你实现了 _update_udp_target_display() 也可以调用它
+
+            # 关闭弹窗（如需保留弹窗让用户继续编辑，可注释掉这一行）
             top.destroy()
 
+        # 按钮区：确定 / 清除配置
         btn_ok = tk.Button(top, text="确定", width=10, command=on_ok)
         btn_ok.grid(row=4, column=0, padx=8, pady=10)
-        btn_cancel = tk.Button(top, text="取消", width=10, command=on_cancel)
-        btn_cancel.grid(row=4, column=1, padx=8, pady=10)
+
+        btn_clear = tk.Button(top, text="清除配置", width=10, command=on_clear)
+        btn_clear.grid(row=4, column=1, padx=8, pady=10)
 
     def _format_udp_target(self, ip: str, port: str) -> str:
         ip = (ip or "").strip()
