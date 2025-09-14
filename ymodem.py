@@ -67,6 +67,10 @@ class YMODEM(object):
           2) 发送首包（包0）：包含文件名与长度；等待对端 ACK/CRC。
           3) 分块发送数据包（128/1024字节），每块后等待 ACK/NAK，重试不超过 retry。
           4) 发送 EOT 结束，等待 ACK；再发空包完成会话。
+        特性：
+          - 支持取消：当外部调用 update_flash_status(2) 时，在任意等待点即时返回 "cancel"
+          - 支持进度：通过 callback(percent) 反馈给上层更新 UI
+          - 支持结果：通过 flash_status_callback(1/2) 通知成功/失败（取消独立返回）
         回调：
           - callback(percent:int, stage:str|int)：用于 UI 更新，如百分比/阶段状态。
           - flash_status_callback(status:int)：外部状态更新（1=成功、2=失败、其它自定义）。
@@ -432,6 +436,31 @@ class YMODEM(object):
 
     # CRC algorithm: CCITT-0
     def calc_crc(self, data, crc=0):
+        """
+        计算 YMODEM/XMODEM 使用的 CRC16 值（CRC-16/CCITT-XMODEM 变体）。
+
+        参数：
+            data (bytes): 需要计算校验的数据区（不含 SOH/STX、块号/反码）。
+
+        返回：
+            bytes: 两字节的 CRC，高字节在前（big-endian）。
+            （如果你的实现返回 int，则其范围为 0x0000~0xFFFF。）
+
+        算法说明：
+            - 多项式（Poly） : 0x1021 （CRC-16/CCITT）
+            - 初始值（Init） : 0x0000
+            - 反射（RefIn/RefOut）: False/False（不反射）
+            - 终异或（XorOut）: 0x0000
+            - 逐位处理：对每个输入字节，先与寄存器高 8 位异或，然后循环 8 次：
+                若最高位为 1，则左移一位并与 0x1021 异或；否则仅左移一位。
+
+        用途：
+            YMODEM 在使用 'C' 握手的 CRC 模式下，会在每个数据包尾部追加该 2 字节 CRC。
+            与“8 位校验和（NAK 模式）”不同，CRC 模式能更好地检测错误。
+
+        参考：
+            与 _make_send_checksum()/_verify_recv_checksum() 的 CRC 分支保持一致。
+        """
         for char in bytearray(data):
             crctbl_idx = ((crc >> 8) ^ char) & 0xff
             crc = ((crc << 8) ^ self.crctable[crctbl_idx]) & 0xffff

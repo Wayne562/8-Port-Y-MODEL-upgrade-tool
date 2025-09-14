@@ -7,7 +7,8 @@ UPGRADE_V1.7
 3) 在发送升级指令后和握手循环内加入取消判断（支持 ymodem_sender 标志与 per-row 事件）
 4) 在升级的3个阶段都增加了日志打印，可以显示具体是在哪个阶段取消升级（upgrade canceled (before handshake)、upgrade canceled (during handshake)、upgrade canceled (during transfer)）
 5）修复串口连接成功后UDP配置仍然能点击的问题
-6）版本号更新到V1.7
+6）每个函数都增加了注释
+7）版本号更新到V1.7
 """
 
 import logging
@@ -34,6 +35,18 @@ send_data_mutex = threading.Lock()
 
 class SerialFlasherApp:
     def __init__(self, root):
+        """
+        应用初始化：建立 Tk 根窗口、创建串口行/UDP 行/多条升级行并初始化状态。
+        主要工作：
+          - 初始化成员变量（串口对象、UDP socket、路径变量、取消事件等）
+          - 搭建 UI（串口行、UDP 行、8 行升级控件）并设置列权重以支持窗口拉伸
+          - 绑定按钮回调：打开/关闭串口，UDP 配置/连接/关闭，选择文件/升级/取消
+          - 设置日志/定时刷新可用串口
+        参数：
+          root: Tk 根窗口
+          interface_count: 升级行数（默认 8）
+        返回：无
+        """
         self.log = logging.getLogger('YReporter')
         self.root = root
         self.root.title("UPGRADE_V1.7")
@@ -242,8 +255,15 @@ class SerialFlasherApp:
 
     def create_udp_row(self):
         """
-        UDP 行，从左到右：
-        [UDP] [配置] [Server IP Entry] [连接] [关闭]
+        创建“UDP 行”UI：从左到右为 [UDP标签][配置按钮][Server IP:Port 显示][连接按钮][关闭按钮]。
+        行为：
+          - ‘UDP配置’ 打开配置弹窗（local/server IP/Port 编辑）
+          - ‘连接’ 仅记录目标地址/可选探测，不做真正握手（UDP 无握手）
+          - ‘关闭’ 释放 UDP socket、复位 UI
+        返回：
+          dict —— 返回该行关键控件引用（label/cfg_button/server_ip_entry/connect_button/close_button 等）
+        备注：如与串口互斥，连接成功后可置灰串口的“打开/关闭”按钮，反之亦然。
+        UDP行，从左到右：[UDP] [配置] [Server IP Entry] [连接] [关闭]
         """
         frame = tk.Frame(self.root)
 
@@ -287,7 +307,14 @@ class SerialFlasherApp:
         }
 
     def _guess_local_ip(self) -> str:
-        """尽力猜一个本机 IP 作为默认值（失败就留空）"""
+        """
+        猜测/探测本机的本地 IP（用于 UDP local_ip 的默认值）。
+        策略：优先选择可路由到公网/目标网段的非 127.0.0.1 地址；失败则返回空字符串。
+        返回：
+          str —— 猜测到的本地 IPv4（或空字符串表示未知/不指定）。
+        备注：仅用于默认展示，不会强制绑定网卡。
+        """
+        #  尽力猜一个本机 IP 作为默认值（失败就留空）
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -346,6 +373,14 @@ class SerialFlasherApp:
 
         # ---- 小工具：高亮错误框 ----
         def _mark_ok(widget, ok: bool):
+            """
+            为输入框打高亮标记：校验通过=白色，校验失败=淡红色。
+            场景：UDP 配置弹窗中对 Local/Server 的 IP/Port 输入做就地提示。
+            参数：
+              widget: 需要高亮的 Entry 控件
+              ok: True=恢复正常底色；False=置为错误底色（#FFECEC）
+            返回：无
+            """
             try:
                 widget.configure(bg=("#FFFFFF" if ok else "#FFECEC"))
             except Exception:
@@ -672,6 +707,13 @@ class SerialFlasherApp:
 
     # 获取当前可用的串口列表
     def get_available_ports(self):
+        """
+        枚举当前系统可用的串口列表。
+        Windows 形如 COM1/COM3；Linux 形如 /dev/ttyUSB0；macOS 形如 /dev/tty.usbserial-xxx。
+        返回：
+          list[str] —— 可用串口名列表（已过滤不存在/重复端口）。
+        备注：失败时返回空列表；建议在定时刷新或“刷新端口”按钮中调用。
+        """
         ports = [port.device for port in serial.tools.list_ports.comports()]
         all_available_ports = sorted(ports)
         return all_available_ports
@@ -856,7 +898,25 @@ class SerialFlasherApp:
 
     # 每2秒定时检查一次可用串口
     def update_ports_loop(self):
-        """后台线程：轮询串口；UI 更新丢回主线程执行"""
+        """
+        周期性刷新“可用串口”并更新下拉框（非阻塞轮询）。
+
+        流程：
+          1) 调用 get_available_ports() 获取最新串口列表。
+          2) 调用 _apply_ports_to_combo(...) 写回到 combobox，尽量保留当前选择。
+          3) 使用 self.root.after(interval_ms, self.update_ports_loop) 自我调度，避免线程阻塞 UI。
+
+        约定/细节：
+          - 轮询间隔一般 500ms~2000ms 之间权衡即可（过短浪费、过长更新不及时）。
+          - 若串口已打开，通常只刷新列表但不改变当前选择；当检测到“已选端口消失”时，可提示或仅维持现状，
+            具体由你的业务决定（不要在已连接时偷偷切换端口）。
+          - 注意在窗口关闭/on_close 时停止调度（例如设置一个标志，或在销毁前不再调用 after），
+            以免在销毁的 Tk 上继续调度导致异常。
+
+        异常处理：
+          - get_available_ports() 失败时，保持现有 combobox 不变即可；无需抛出到界面。
+        """
+        # 后台线程：轮询串口；UI 更新丢回主线程执行
         while True:
             try:
                 available = self.get_available_ports()
@@ -868,7 +928,23 @@ class SerialFlasherApp:
             time.sleep(2)
 
     def _apply_ports_to_combo(self, ports):
-        """在主线程里安全地更新下拉框"""
+        """
+        将“当前可用的串口列表”写入下拉框，并尽量保留用户已选择的端口。
+
+        做了什么：
+          - 比较旧值与新列表，只有在发生变化时才更新 combobox['values']，减少闪烁/重置。
+          - 若“当前选中端口”仍在新列表中，则保留选择；否则根据你的策略清空或选中第一个可用端口。
+          - 可选：根据是否有可用端口来切换“打开/关闭串口”按钮的可用状态与状态标签（视你的实现需要）。
+
+        输入/依赖：
+          - 新的端口列表通常来自 get_available_ports()。
+          - 目标下拉框一般为 self.serial_rows[0]['port_combobox']（若函数内部从 self 取控件，无需入参）。
+
+        注意：
+          - 本函数只负责 UI 层写值，不实际打开/关闭串口。
+          - 若端口列表为空，应避免强行设置一个不存在的值；保持 combobox 为空并禁用“打开串口”更友好。
+        """
+        # 在主线程里安全地更新下拉框
         combo = self.serial_rows[0]['port_combobox']
         if ports:
             # 仅在列表变化时更新，减少闪动
@@ -882,7 +958,16 @@ class SerialFlasherApp:
             combo.set('')
 
     def ui_call(self, fn, *args, **kwargs):
-        """在 Tk 主线程中执行 fn(*args, **kwargs)（修复跨线程更新 UI 的问题）"""
+        """
+        把任意函数投递到 Tk 主线程执行（线程安全的 UI 调度器）。
+        典型用法：在工作线程中调用 ui_call(self.rows[i]['progress_bar'].configure, value=percent)
+        实现思路：使用 root.after(0, fn, *args, **kwargs) 将调用排入事件循环。
+        参数：
+          fn: 可调用对象（通常是某控件的 .configure 或自定义的 _ui 闭包）
+          *args/**kwargs: 透传给 fn 的参数
+        返回：无（异步在主线程执行）
+        """
+        # 在 Tk 主线程中执行 fn(*args, **kwargs)（修复跨线程更新 UI 的问题
         self.root.after(0, lambda: fn(*args, **kwargs))
 
     def cancel_flash(self, idx: int):
@@ -929,6 +1014,12 @@ class SerialFlasherApp:
 
         # UI：立即给用户反馈“取消中…”，禁止重复点击
         def _ui():
+            """
+            内部 UI 更新函数（通常作为闭包传给 ui_call 使用）。
+            作用：只做界面控件的 configure()/set() 等操作，不做耗时/阻塞任务。
+            说明：Tkinter 仅允许在主线程更新 UI；请通过 ui_call() 把本函数投递到主线程执行。
+            参数/返回：由调用方决定；本函数不返回值。
+            """
             r = self.rows[i]
             r['flash_status_label'].configure(fg='red', text='取消中…')
             r['flash_button'].configure(state=tk.DISABLED)
@@ -1080,6 +1171,13 @@ class SerialFlasherApp:
 
         with open(file_path, 'rb') as file_stream:
             def callback(percentage):
+                """
+                进度回调：更新当前行的进度条与百分比标签。
+                参数：
+                  percentage: 0~100 的整数；可根据文件发送字节数计算得到。
+                线程安全：通常从发送线程调用，请配合 ui_call() 切到主线程更新控件。
+                返回：无
+                """
                 if percentage < 100 or percentage == 100:
                     self.root.after(0, progress_callback, percentage)
                     self.root.after(0, self.update_percentage_label, row, percentage)
@@ -1094,6 +1192,14 @@ class SerialFlasherApp:
 
             #   烧录状态标志位返回及判断
             def flash_status_callback(flash_status):
+                """
+                YMODEM 状态回调（由 ymodem 传输过程中调用）。
+                约定：
+                  status == 1 → 传输成功（更新 UI 为“升级成功！”）
+                  status == 2 → 传输失败（更新 UI 为“升级失败！”）
+                  其他值 → 可留作扩展（例如阶段型状态/告警）
+                说明：取消场景通常由 ymodem_send() 的返回值 "cancel" 单独处理。
+                """
                 #   flash_status为1表示烧录成功
                 if flash_status == 1:
                     self.log.info(f"*** 第{row + 1}行串口烧录完成！")
@@ -1154,6 +1260,17 @@ class SerialFlasherApp:
 
     #   烧录按键
     def flash(self, row, port_var):
+        """
+        点击“升级”按钮的入口：校验前置条件并启动该行的升级线程。
+        流程：
+          1) 校验：串口/UDP 可用、已选择升级文件、端口与波特率合法
+          2) UI 置为忙：禁用“选择文件/升级”按钮，状态改为“升级中…”，‘取消’按钮高亮
+          3) 启动线程：目标 burn_in_thread(row, port, upgrade_command)
+        参数：
+          row: 1-based 行号
+          port: 当前选定串口名（若走 UDP 可忽略此值）
+        返回：无（线程内负责后续 UI 收尾）
+        """
         # 烧录逻辑
         # 启动一个线程执行烧录
         file_path = self.file_path[row - 1].get()
