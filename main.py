@@ -575,7 +575,6 @@ class SerialFlasherApp:
         - 次次选：该行当前已填文件的所在目录
         - 兜底：当前工作目录
         """
-        import os
         # 你的代码里 row 是 1-based，这里转成 0-based 索引
         idx = row - 1 if row >= 1 else row
 
@@ -584,9 +583,10 @@ class SerialFlasherApp:
 
         # ① 每行上次目录
         if getattr(self, "last_open_dirs", None):
-            d = self.last_open_dirs[idx]
-            if d and os.path.isdir(d):
-                suggest_dir = d
+            if 0 <= idx < len(self.last_open_dirs):
+                d = self.last_open_dirs[idx]
+                if d is not None and os.path.isdir(d):
+                    suggest_dir = d
 
         # ② 全局上次目录
         if not suggest_dir:
